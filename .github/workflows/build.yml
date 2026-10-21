@@ -19,40 +19,13 @@ jobs:
       - name: Install cross-build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang lld make gdisk dosfstools mtools python3
+          sudo apt-get install --yes clang lld make python3
 
-      - name: Build UEFI image and drivers
+      - name: Build UEFI image, drivers, and FAT32 disk
         run: make build
 
       - name: Package SDK source
         run: python3 tools/package_sdk.py build/AnnyOS-SDK.zip
-
-      - name: Package AP sample applications
-        run: |
-          mkdir -p build/esp/APPS
-          for source in apps/*.apasm; do
-            name="$(basename "${source%.apasm}")"
-            python3 tools/ap_pack.py "$source" "build/esp/APPS/${name}.AP"
-          done
-
-      - name: Create GPT and FAT32 UEFI disk image
-        run: |
-          image=build/AnnyOS.img
-          truncate -s 64M "$image"
-          sgdisk --clear --new=1:2048:0 --typecode=1:EF00 --change-name=1:AnnyOS "$image"
-          mformat -i "$image@@1048576" -F -v ANNYOS ::
-          mmd -i "$image@@1048576" ::/EFI
-          mmd -i "$image@@1048576" ::/EFI/BOOT
-          mmd -i "$image@@1048576" ::/driver
-          mmd -i "$image@@1048576" ::/fonts
-          mmd -i "$image@@1048576" ::/fonts/segoe-ui
-          mmd -i "$image@@1048576" ::/APPS
-          mcopy -i "$image@@1048576" build/esp/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
-          mcopy -i "$image@@1048576" build/esp/ANNYOS.BIN build/esp/bootx86.efi ::/
-          mcopy -i "$image@@1048576" build/esp/driver/*.sys ::/driver/
-          mcopy -i "$image@@1048576" build/esp/fonts/segoe-ui/* ::/fonts/segoe-ui/
-          mcopy -i "$image@@1048576" build/esp/APPS/*.AP ::/APPS/
-          mdir -i "$image@@1048576" ::/
 
       - name: Upload build outputs
         uses: actions/upload-artifact@v4
