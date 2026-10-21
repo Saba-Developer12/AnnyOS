@@ -8,6 +8,7 @@ import sys
 
 MAGIC = b"ANNYAP1\0"
 HEADER_SIZE = 40
+MAX_FILE_SIZE = 64 * 1024
 OP_PRINT = 0x01
 OP_API = 0x02
 OP_HELP_ROW = 0x03
@@ -72,6 +73,8 @@ def main() -> int:
     code.append(OP_EXIT)
 
     file_size = HEADER_SIZE + len(code)
+    if file_size > MAX_FILE_SIZE:
+        raise SystemExit(f"AP application exceeds the {MAX_FILE_SIZE}-byte format limit")
     header = struct.pack(
         "<8sHH7I",
         MAGIC,

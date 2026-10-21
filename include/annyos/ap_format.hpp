@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 #include "annyos/api.hpp"
 
@@ -11,7 +12,8 @@ constexpr uint32_t kApMaximumFileBytes = 64 * 1024;
 constexpr uint32_t kApMaximumInstructions = 4096;
 constexpr uint32_t kApMaximumPrintBytes = 95;
 
-#pragma pack(push, 1)
+// Describes the on-disk fields. Parse untrusted bytes with explicit
+// little-endian reads; do not reinterpret an arbitrary byte buffer as ApHeader.
 struct ApHeader {
     char magic[8];             // "ANNYAP1\0"
     uint16_t version;          // kApVersion
@@ -22,11 +24,13 @@ struct ApHeader {
     uint32_t code_size;
     uint32_t entry_offset;     // zero in version 1
     uint32_t code_checksum;    // FNV-1a 32-bit over code_size bytes
-    uint32_t api_version;      // annyos::api::kVersion
+    uint32_t api_version;      // minimum required AnnyOS API version
 };
-#pragma pack(pop)
 
 static_assert(sizeof(ApHeader) == kApHeaderBytes, "AP header layout changed");
+static_assert(offsetof(ApHeader, version) == 8, "AP version offset changed");
+static_assert(offsetof(ApHeader, file_size) == 16, "AP file-size offset changed");
+static_assert(offsetof(ApHeader, code_checksum) == 32, "AP checksum offset changed");
 
 enum class ApOpcode : uint8_t {
     print = 0x01, // u8 byte count, then printable ASCII bytes

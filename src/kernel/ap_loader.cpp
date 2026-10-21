@@ -86,8 +86,10 @@ ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& hos
     if (image == nullptr || host.api == nullptr || image_size < kApHeaderBytes ||
         image_size > kApMaximumFileBytes) return ApResult::invalid_argument;
     const annyos::api::AnnyOsApiV1& api = *host.api;
-    if (api.structure_size < sizeof(annyos::api::AnnyOsApiV1) ||
-        api.version != annyos::api::kVersion || api.console_write_line == nullptr ||
+    if (api.structure_size < sizeof(api.structure_size) + sizeof(api.version) ||
+        api.version < annyos::api::kVersion ||
+        api.structure_size < sizeof(annyos::api::AnnyOsApiV1) ||
+        api.console_write_line == nullptr ||
         api.console_write_title == nullptr ||
         api.console_write_help_row == nullptr || api.invoke_service == nullptr) {
         return ApResult::invalid_argument;
@@ -101,8 +103,12 @@ ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& hos
     if (version != kApVersion) return ApResult::unsupported_version;
     if (header_size != kApHeaderBytes || read_u32(image + 12) != 0 ||
         read_u32(image + 16) != image_size || read_u32(image + 20) != kApHeaderBytes ||
-        read_u32(image + 28) != 0 || read_u32(image + 36) != api.version) {
+        read_u32(image + 28) != 0) {
         return ApResult::invalid_header;
+    }
+    const uint32_t required_api_version = read_u32(image + 36);
+    if (required_api_version == 0 || required_api_version > api.version) {
+        return ApResult::unsupported_version;
     }
 
     const uint32_t code_size = read_u32(image + 24);
@@ -117,6 +123,7 @@ ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& hos
     uint32_t offset = 0;
     uint32_t instruction_count = 0;
     while (offset < code_size) {
+        if (instruction_count >= kApMaximumInstructions) return ApResult::invalid_program;
         ++instruction_count;
         const ApOpcode opcode = static_cast<ApOpcode>(code[offset++]);
         if (opcode == ApOpcode::exit) break;

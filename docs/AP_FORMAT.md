@@ -22,12 +22,14 @@ by the bytecode.
 | 24 | 4 | Code size | Exact bytecode length |
 | 28 | 4 | Entry offset | `0` |
 | 32 | 4 | Code checksum | FNV-1a 32-bit over bytecode |
-| 36 | 4 | Required AnnyOS API version | `1` |
+| 36 | 4 | Minimum required AnnyOS API version | `1` |
 
-The complete file is limited to 64 KiB. The loader checks every size and
-offset, checksum, opcode, operand, printable character, instruction count and
-terminal `EXIT` before it emits any application output. FNV-1a detects
-accidental corruption; it is not a signature or authenticity check.
+The complete file is limited to 64 KiB. The loader reads integer fields from
+the byte stream explicitly as little-endian values instead of casting the
+untrusted image to a C++ struct. It checks exact file/header/code bounds,
+checksum, opcode, operands, printable characters, instruction count and
+terminal `EXIT` before emitting application output. FNV-1a detects accidental
+corruption; it is not a signature or authenticity check.
 
 ## Bytecode
 
@@ -39,9 +41,13 @@ accidental corruption; it is not a signature or authenticity check.
 | `0x04 TITLE` | `04`, one-byte length, printable ASCII title | Draw a highlighted console title |
 | `0xFF EXIT` | `FF` | End the application; must be the final byte |
 
-There are at most 4096 instructions. Each `PRINT` line is limited to 95 bytes.
+There are at most 4096 instructions, counting `EXIT`. Each `PRINT` line is
+limited to 95 bytes.
 API service IDs in version 1 are `1 VERSION`, `2 DATE`, `3 TIME`, `4 MEMORY`,
-and `5 REBOOT`. The service table is defined in `include/annyos/api.hpp`.
+and `5 REBOOT`. The service table is defined in `include/annyos/api.hpp`. Its
+V1 prefix remains stable as newer API versions append fields. A V1 application
+can run on a newer host version if that host supports the API version required
+in the application's header.
 Applications have no jumps, pointers, native calls, disk writes, or direct
 hardware I/O; privileged actions are limited to these explicit API services.
 

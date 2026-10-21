@@ -22,6 +22,7 @@ using InvokeService = bool (*)(void* context, Service service);
 
 // Stable host table presented to version 1 .AP bytecode applications.
 struct AnnyOsApiV1 {
+    // Hosts may append fields in later versions; the V1 prefix remains stable.
     uint32_t structure_size;
     uint32_t version;
     void* context;
