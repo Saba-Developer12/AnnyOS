@@ -1,0 +1,35 @@
+name: Build AnnyOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install cross-build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang lld make
+
+      - name: Build UEFI image and drivers
+        run: make build
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnnyOS-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            build/annyos.bin
+            build/esp/EFI/BOOT/BOOTX64.EFI
+            build/esp/driver/*.sys
