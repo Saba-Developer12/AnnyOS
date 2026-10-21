@@ -85,10 +85,12 @@ bool ata_pio_read_sector(void* context, uint64_t lba, uint8_t* destination) {
     auto* state = static_cast<AtaPioDevice*>(context);
     if (state == nullptr || destination == nullptr || lba >= state->sector_count ||
         lba > 0x0fffffffull) return false;
-    if (!wait_status(*state, false)) return false;
-
+    // Every channel has a shared selected-drive register. Select this device
+    // before checking status, since another probe/read may have left an empty
+    // slave selected on the same channel.
     out8(state->io_base + kDrive, static_cast<uint8_t>(0xe0 | (state->drive << 4) | ((lba >> 24) & 0x0f)));
     io_delay(*state);
+    if (!wait_status(*state, false)) return false;
     out8(state->io_base + kSectorCount, 1);
     out8(state->io_base + kLbaLow, static_cast<uint8_t>(lba));
     out8(state->io_base + kLbaMid, static_cast<uint8_t>(lba >> 8));

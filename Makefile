@@ -6,7 +6,7 @@ all: build
 build:
 	bash ./scripts/build.sh
 
-run:
+run: build
 	bash ./scripts/run_qemu.sh
 
 clean:

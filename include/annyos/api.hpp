@@ -12,6 +12,8 @@ enum class Service : uint8_t {
     time = 3,
     memory = 4,
     reboot = 5,
+    sleep = 6,
+    beep = 7,
 };
 
 using ConsoleWriteLine = bool (*)(void* context, const char* text, uint8_t length);

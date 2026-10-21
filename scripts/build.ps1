@@ -25,6 +25,9 @@ $sources = @(
     @{ Path = 'src\drivers\input\ps2_keyboard.cpp'; Name = 'ps2_keyboard.obj' },
     @{ Path = 'src\drivers\storage\fat32.cpp'; Name = 'fat32.obj' },
     @{ Path = 'src\drivers\storage\ata_pio.cpp'; Name = 'ata_pio.obj' },
+    @{ Path = 'src\drivers\system\timer_pit.cpp'; Name = 'timer_pit.obj' },
+    @{ Path = 'src\drivers\system\serial_com1.cpp'; Name = 'serial_com1.obj' },
+    @{ Path = 'src\drivers\system\pc_speaker.cpp'; Name = 'pc_speaker.obj' },
     @{ Path = 'src\kernel\ap_loader.cpp'; Name = 'ap_loader.obj' },
     @{ Path = 'src\kernel\runtime.cpp'; Name = 'runtime.obj' },
     @{ Path = 'src\kernel\main.cpp'; Name = 'kernel_main.obj' }
@@ -40,7 +43,10 @@ foreach ($source in $sources) {
 
 $moduleSources = @(
     @{ Path = 'src\drivers\storage\fat32_module.cpp'; Name = 'fat32_module.obj' },
-    @{ Path = 'src\drivers\input\ps2kbd_module.cpp'; Name = 'ps2kbd_module.obj' }
+    @{ Path = 'src\drivers\input\ps2kbd_module.cpp'; Name = 'ps2kbd_module.obj' },
+    @{ Path = 'src\drivers\system\timer_module.cpp'; Name = 'timer_module.obj' },
+    @{ Path = 'src\drivers\system\serial_module.cpp'; Name = 'serial_module.obj' },
+    @{ Path = 'src\drivers\system\speaker_module.cpp'; Name = 'speaker_module.obj' }
 )
 foreach ($source in $moduleSources) {
     $sourcePath = Join-Path $root $source.Path
@@ -85,6 +91,34 @@ $keyboardModuleArgs = @(
 & $linker @keyboardModuleArgs
 if ($LASTEXITCODE -ne 0) { throw 'PS/2 keyboard driver module link failed.' }
 
+$timerModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_timer_initialize', '/export:annyos_timer_ticks', '/export:annyos_timer_sleep_ms',
+    "/out:$(Join-Path $buildDir 'timer.sys')",
+    (Join-Path $objectDir 'timer_pit.obj'), (Join-Path $objectDir 'timer_module.obj')
+)
+& $linker @timerModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'PIT timer module link failed.' }
+
+$serialModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_serial_initialize', '/export:annyos_serial_write_byte', '/export:annyos_serial_write',
+    "/out:$(Join-Path $buildDir 'serial.sys')",
+    (Join-Path $objectDir 'serial_com1.obj'), (Join-Path $objectDir 'serial_module.obj')
+)
+& $linker @serialModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'COM1 serial module link failed.' }
+
+$speakerModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_speaker_initialize', '/export:annyos_speaker_tone', '/export:annyos_speaker_stop',
+    "/out:$(Join-Path $buildDir 'speaker.sys')",
+    (Join-Path $objectDir 'pc_speaker.obj'), (Join-Path $objectDir 'timer_pit.obj'),
+    (Join-Path $objectDir 'speaker_module.obj')
+)
+& $linker @speakerModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'PC speaker module link failed.' }
+
 $kernelImage = Join-Path $buildDir 'annyos.bin'
 Copy-Item -LiteralPath $efiPath -Destination $kernelImage -Force
 Copy-Item -LiteralPath $efiPath -Destination (Join-Path $efiDir 'BOOTX86.EFI') -Force
@@ -98,6 +132,28 @@ Copy-Item -LiteralPath (Join-Path $root 'font\segoe-ui\README.TXT') -Destination
 Copy-Item -LiteralPath (Join-Path $buildDir 'fat32.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'ata.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'ps2kbd.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'timer.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'serial.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'speaker.sys') -Destination $driverDir -Force
+
+$appsDir = Join-Path $espDir 'apps'
+New-Item -ItemType Directory -Force -Path $appsDir | Out-Null
+$driveLetter = $root.Substring(0, 1).ToLowerInvariant()
+$rootWsl = "/mnt/$driveLetter/" + $root.Substring(3).Replace('\', '/')
+if (-not (Test-Path $root)) {
+    throw 'WSL with Python 3 is required to package AP files and create the FAT32 image.'
+}
+foreach ($appSource in Get-ChildItem -LiteralPath (Join-Path $root 'apps') -Filter '*.apasm' -File) {
+    $appOutput = Join-Path $appsDir ($appSource.BaseName + '.AP')
+    $appSourceWsl = "$rootWsl/apps/$($appSource.Name)"
+    $appOutputWsl = "$rootWsl/build/esp/apps/$($appSource.BaseName).AP"
+    & wsl.exe python3 "$rootWsl/tools/ap_pack.py" $appSourceWsl $appOutputWsl
+    if ($LASTEXITCODE -ne 0) { throw "AP application packaging failed: $($appSource.Name)" }
+}
+$espDirWsl = "$rootWsl/build/esp"
+$imagePathWsl = "$rootWsl/build/AnnyOS.img"
+& wsl.exe python3 "$rootWsl/tools/build_disk_image.py" $espDirWsl $imagePathWsl
+if ($LASTEXITCODE -ne 0) { throw 'FAT32 disk image creation failed.' }
 
 Write-Host "Built $efiPath"
-Write-Host "Built $kernelImage and driver modules in $driverDir"
+Write-Host "Built $kernelImage, FAT32 disk image, and driver modules in $driverDir"

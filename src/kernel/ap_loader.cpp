@@ -26,21 +26,45 @@ uint32_t checksum(const uint8_t* bytes, uint32_t length) {
     return value;
 }
 
-ApResult validate_program(const uint8_t* code, uint32_t code_size) {
+ApResult process_program(const uint8_t* code, uint32_t code_size,
+                         const annyos::api::AnnyOsApiV1* api,
+                         const ApArguments* arguments, bool execute,
+                         uint32_t* processed_instructions) {
     uint32_t offset = 0;
     uint32_t instruction_count = 0;
     while (offset < code_size && instruction_count < kApMaximumInstructions) {
         ++instruction_count;
         const ApOpcode opcode = static_cast<ApOpcode>(code[offset++]);
         if (opcode == ApOpcode::exit) {
-            return offset == code_size ? ApResult::success : ApResult::invalid_program;
+            if (offset != code_size) return ApResult::invalid_program;
+            if (processed_instructions != nullptr) *processed_instructions = instruction_count;
+            return ApResult::success;
         }
         if (opcode == ApOpcode::api_call) {
             if (offset >= code_size) return ApResult::invalid_program;
             const uint8_t service = code[offset++];
             if (service < static_cast<uint8_t>(annyos::api::Service::version) ||
-                service > static_cast<uint8_t>(annyos::api::Service::reboot)) {
+                service > static_cast<uint8_t>(annyos::api::Service::beep)) {
                 return ApResult::invalid_program;
+            }
+            if (execute && !api->invoke_service(api->context,
+                    static_cast<annyos::api::Service>(service))) return ApResult::output_failed;
+            continue;
+        }
+
+        if (opcode == ApOpcode::print_argument) {
+            if (offset >= code_size || code[offset] >= kApMaximumArguments) {
+                return ApResult::invalid_program;
+            }
+            const uint8_t index = code[offset++];
+            if (execute) {
+                const char* text = arguments != nullptr && index < arguments->count
+                    ? arguments->values[index] : "";
+                uint32_t length = 0;
+                while (length < kApMaximumArgumentBytes && text[length] != '\0') ++length;
+                if (!api->console_write_line(api->context, text, static_cast<uint8_t>(length))) {
+                    return ApResult::output_failed;
+                }
             }
             continue;
         }
@@ -54,6 +78,17 @@ ApResult validate_program(const uint8_t* code, uint32_t code_size) {
             for (uint32_t index = 0; index < text_length; ++index) {
                 const uint8_t character = code[offset + index];
                 if (character < 32 || character > 126) return ApResult::invalid_program;
+            }
+            if (execute) {
+                char text[kApMaximumPrintBytes + 1];
+                for (uint32_t index = 0; index < text_length; ++index) {
+                    text[index] = static_cast<char>(code[offset + index]);
+                }
+                text[text_length] = '\0';
+                const bool written = opcode == ApOpcode::title
+                    ? api->console_write_title(api->context, text, static_cast<uint8_t>(text_length))
+                    : api->console_write_line(api->context, text, static_cast<uint8_t>(text_length));
+                if (!written) return ApResult::output_failed;
             }
             offset += text_length;
             continue;
@@ -71,6 +106,21 @@ ApResult validate_program(const uint8_t* code, uint32_t code_size) {
                 const uint8_t character = code[offset + index];
                 if (character < 32 || character > 126) return ApResult::invalid_program;
             }
+            if (execute) {
+                char command[17];
+                char description[79];
+                for (uint32_t index = 0; index < command_length; ++index) {
+                    command[index] = static_cast<char>(code[offset + index]);
+                }
+                command[command_length] = '\0';
+                for (uint32_t index = 0; index < description_length; ++index) {
+                    description[index] = static_cast<char>(code[offset + command_length + index]);
+                }
+                description[description_length] = '\0';
+                if (!api->console_write_help_row(api->context, command,
+                        static_cast<uint8_t>(command_length), description,
+                        static_cast<uint8_t>(description_length))) return ApResult::output_failed;
+            }
             offset += command_length + description_length;
             continue;
         }
@@ -81,7 +131,7 @@ ApResult validate_program(const uint8_t* code, uint32_t code_size) {
 }
 
 ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& host,
-                    uint32_t* executed_instructions) {
+                    const ApArguments* arguments, uint32_t* executed_instructions) {
     if (executed_instructions != nullptr) *executed_instructions = 0;
     if (image == nullptr || host.api == nullptr || image_size < kApHeaderBytes ||
         image_size > kApMaximumFileBytes) return ApResult::invalid_argument;
@@ -117,54 +167,12 @@ ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& hos
     const uint8_t* code = image + kApHeaderBytes;
     if (checksum(code, code_size) != expected_checksum) return ApResult::invalid_checksum;
 
-    const ApResult validation = validate_program(code, code_size);
-    if (validation != ApResult::success) return validation;
-
-    uint32_t offset = 0;
-    uint32_t instruction_count = 0;
-    while (offset < code_size) {
-        if (instruction_count >= kApMaximumInstructions) return ApResult::invalid_program;
-        ++instruction_count;
-        const ApOpcode opcode = static_cast<ApOpcode>(code[offset++]);
-        if (opcode == ApOpcode::exit) break;
-        if (opcode == ApOpcode::api_call) {
-            const auto service = static_cast<annyos::api::Service>(code[offset++]);
-            if (!api.invoke_service(api.context, service)) return ApResult::output_failed;
-        } else if (opcode == ApOpcode::print || opcode == ApOpcode::title) {
-            const uint8_t text_length = code[offset++];
-            char line[kApMaximumPrintBytes + 1];
-            for (uint32_t index = 0; index < text_length; ++index) {
-                line[index] = static_cast<char>(code[offset + index]);
-            }
-            line[text_length] = '\0';
-            offset += text_length;
-            const bool written = opcode == ApOpcode::title
-                ? api.console_write_title(api.context, line, text_length)
-                : api.console_write_line(api.context, line, text_length);
-            if (!written) return ApResult::output_failed;
-        } else if (opcode == ApOpcode::help_row) {
-            const uint8_t command_length = code[offset++];
-            const uint8_t description_length = code[offset++];
-            char command[17];
-            char description[79];
-            for (uint32_t index = 0; index < command_length; ++index) {
-                command[index] = static_cast<char>(code[offset + index]);
-            }
-            command[command_length] = '\0';
-            offset += command_length;
-            for (uint32_t index = 0; index < description_length; ++index) {
-                description[index] = static_cast<char>(code[offset + index]);
-            }
-            description[description_length] = '\0';
-            offset += description_length;
-            if (!api.console_write_help_row(api.context, command, command_length,
-                                            description, description_length)) {
-                return ApResult::output_failed;
-            }
-        }
+    if (arguments != nullptr && arguments->count > kApMaximumArguments) {
+        return ApResult::invalid_argument;
     }
-    if (executed_instructions != nullptr) *executed_instructions = instruction_count;
-    return ApResult::success;
+    const ApResult validation = process_program(code, code_size, &api, arguments, false, nullptr);
+    if (validation != ApResult::success) return validation;
+    return process_program(code, code_size, &api, arguments, true, executed_instructions);
 }
 
 } // namespace annyos::application

@@ -11,6 +11,13 @@ constexpr uint32_t kApHeaderBytes = 40;
 constexpr uint32_t kApMaximumFileBytes = 64 * 1024;
 constexpr uint32_t kApMaximumInstructions = 4096;
 constexpr uint32_t kApMaximumPrintBytes = 95;
+constexpr uint32_t kApMaximumArguments = 8;
+constexpr uint32_t kApMaximumArgumentBytes = 95;
+
+struct ApArguments {
+    uint8_t count;
+    char values[kApMaximumArguments][kApMaximumArgumentBytes + 1];
+};
 
 // Describes the on-disk fields. Parse untrusted bytes with explicit
 // little-endian reads; do not reinterpret an arbitrary byte buffer as ApHeader.
@@ -37,6 +44,7 @@ enum class ApOpcode : uint8_t {
     api_call = 0x02, // u8 annyos::api::Service identifier
     help_row = 0x03, // u8 command length, u8 description length, then both strings
     title = 0x04, // u8 byte count, then printable ASCII bytes
+    print_argument = 0x05, // u8 zero-based argument index; absent arguments print an empty line
     exit = 0xff,  // must be the final instruction
 };
 
@@ -58,6 +66,7 @@ struct ApHost {
 // not execute native ring-0 machine code while AnnyOS has no user mode or MMU
 // isolation. Output instructions each produce one console line.
 ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& host,
+                    const ApArguments* arguments = nullptr,
                     uint32_t* executed_instructions = nullptr);
 
 } // namespace annyos::application

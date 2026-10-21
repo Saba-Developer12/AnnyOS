@@ -1,5 +1,7 @@
 # AnnyOS
 
+Current version: **0.2**
+
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,
 exits UEFI Boot Services, and transfers control to freestanding C++ kernel code.
@@ -8,15 +10,17 @@ The project is an early development system; it is not yet a general-purpose OS.
 ## Current features
 
 - x86_64 UEFI boot through `EFI/BOOT/BOOTX64.EFI` and a GOP framebuffer console.
-- DOS-style command processor with `DIR`, `CD`, `CLS`, `COLOR`, and `ECHO`.
-- PS/2 keyboard input and a FAT32 driver backed by legacy ATA PIO.
+- DOS-style command processor with `DIR`, `CD`, `CLS`, `COLOR`, `ECHO`, `SLEEP`, and `BEEP`, plus 32-entry command history with arrow-key recall.
+- PS/2 keyboard, FAT32/ATA PIO storage, 1000 Hz PIT timer, COM1 serial logging,
+  and PC speaker tone drivers.
+- FAT32 volumes on legacy ATA devices can be selected as `C:` through `F:`.
 - AP version 1 bytecode applications, including `HELP`, `VER`, `MEM`, `DATE`,
   `TIME`, and `REBOOT`.
 - Segoe UI font assets rasterized into a freestanding kernel header.
 - Build scripts for Windows PowerShell and Unix-like hosts, plus a QEMU launcher.
 
 FAT32 is the only filesystem currently implemented. FAT12, FAT16, exFAT, ext2,
-ISO9660, and UDF are planned. AP applications are interpreted bytecode; the
+ISO9660, and UDF are planned. USB mass storage is not supported yet. AP applications are interpreted bytecode; the
 kernel does not yet provide native process execution, user mode, paging, or
 process isolation. See [the architecture notes](docs/ARCHITECTURE.md) and
 [AP format documentation](docs/AP_FORMAT.md) for details.
@@ -36,10 +40,10 @@ To select a non-default firmware image:
 .\scripts\run_qemu.ps1 -Firmware 'C:\path\to\edk2-x86_64-code.fd'
 ```
 
-The build creates the EFI application under `build/esp/EFI/BOOT/BOOTX64.EFI`
-and a combined image at `build/annyos.bin`. Image creation scripts are not
-included, so `run_qemu.ps1` requires a bootable `build/AnnyOS.img` supplied
-separately.
+The build creates the EFI application under `build/esp/EFI/BOOT/BOOTX64.EFI`,
+a combined image at `build/annyos.bin`, and a bootable FAT32 disk at
+`build/AnnyOS.img`. The disk contains the boot files, drivers, fonts, and packed
+`.AP` applications from `apps/`.
 
 ## Build on Linux or WSL
 
@@ -51,7 +55,7 @@ make run
 ```
 
 Set `OVMF_CODE=/path/to/OVMF_CODE.fd` if the firmware is not in a standard
-location. `make run` requires a bootable `build/AnnyOS.img` supplied separately.
+location. `make run` builds the FAT32 disk and boots it in QEMU.
 
 ## Repository layout
 

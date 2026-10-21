@@ -14,6 +14,7 @@ OP_PRINT = 0x01
 OP_API = 0x02
 OP_HELP_ROW = 0x03
 OP_TITLE = 0x04
+OP_ARGUMENT = 0x05
 OP_EXIT = 0xFF
 API_SERVICES = {
     "VERSION": 1,
@@ -21,6 +22,8 @@ API_SERVICES = {
     "TIME": 3,
     "MEMORY": 4,
     "REBOOT": 5,
+    "SLEEP": 6,
+    "BEEP": 7,
 }
 
 
@@ -68,6 +71,16 @@ def main() -> int:
                 raise SystemExit("AP title must contain at most 95 printable ASCII bytes")
             code.extend((OP_TITLE, len(encoded)))
             code.extend(encoded)
+            instruction_count += 1
+            continue
+        if line.startswith("ARG "):
+            try:
+                index = int(line[4:].strip(), 10)
+            except ValueError:
+                raise SystemExit("AP ARG syntax: ARG <zero-based-index>")
+            if not 0 <= index < 8:
+                raise SystemExit("AP argument index must be between 0 and 7")
+            code.extend((OP_ARGUMENT, index))
             instruction_count += 1
             continue
         encoded = line.encode("ascii")

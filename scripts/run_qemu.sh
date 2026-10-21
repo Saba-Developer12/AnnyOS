@@ -2,8 +2,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="$ROOT/build/AnnyOS.img"
-if [[ ! -f "$IMAGE" ]]; then
-  printf 'Disk image not found: %s. Image creation scripts were removed; provide a bootable AnnyOS.img first.\n' "$IMAGE" >&2
+ESP="$ROOT/build/esp"
+if [[ ! -f "$IMAGE" && ! -f "$ESP/EFI/BOOT/BOOTX64.EFI" ]]; then
+  printf 'Boot files not found. Run make first to build %s.\n' "$ESP/EFI/BOOT/BOOTX64.EFI" >&2
   exit 1
 fi
 QEMU="${QEMU:-qemu-system-x86_64}"
@@ -26,7 +27,16 @@ if [[ ! -f "$FIRMWARE" ]]; then
 fi
 mkdir -p "$ROOT/build"
 rm -f "$ROOT/build/qemu-debug.log"
+rm -f "$ROOT/build/serial.log"
+if [[ -f "$IMAGE" ]]; then
+  DISK="if=ide,index=0,format=raw,file=$IMAGE"
+else
+  # QEMU's vvfat backend exposes the build directory as a writable FAT disk.
+  # This boots the EFI application without a separate image creation utility.
+  DISK="if=ide,index=0,format=raw,file=fat:rw:$ESP"
+fi
 "$QEMU" -machine pc -m 512M -smp 2 -drive "if=pflash,format=raw,readonly=on,file=$FIRMWARE" \
-  -drive "if=ide,index=0,format=raw,file=$IMAGE" \
+  -drive "$DISK" \
+  -serial "file:$ROOT/build/serial.log" \
   -global isa-debugcon.iobase=0xe9 -debugcon "file:$ROOT/build/qemu-debug.log" \
   -no-reboot -no-shutdown "$@"

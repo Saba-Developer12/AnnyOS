@@ -14,9 +14,10 @@ the framebuffer, CPU instructions, PS/2 ports, and legacy ATA PIO ports.
 The framebuffer renderer supports the GOP RGB, BGR, and bit-mask pixel formats.
 The kernel draws a blue, DOS-style command screen with a `C:\>` prompt and polls
 the legacy i8042 keyboard for set 1 scan codes. Kernel commands are `DIR`,
-`CD`, `CLS`, `ECHO`, and `COLOR`. `HELP`, `VER`, `MEM`, `DATE`, `TIME`, and
-`REBOOT` now run as `.AP` applications through the versioned API. The date and
-time API services read the CMOS RTC, while reboot uses the keyboard controller.
+`CD`, `CLS`, `ECHO`, and `COLOR`. `HELP`, `VER`, `MEM`, `DATE`, `TIME`,
+`REBOOT`, `SLEEP`, and `BEEP` run as `.AP` applications through the versioned
+API. Date and time read the CMOS RTC; sleep uses the PIT timer, beep uses the
+PC speaker, and reboot uses the keyboard controller.
 Keyboard initialization discards scan codes left over from firmware, and
 editing redraws the prompt directly after the visible command history.
 
@@ -24,15 +25,18 @@ The first hand-written filesystem driver is FAT32 (`src/drivers/storage/fat32.cp
 It validates a FAT32 volume on a 512-byte block device and enumerates the root
 directory using a caller-provided sector reader. It locates FAT32 volumes in
 GPT EFI System Partitions or MBR FAT32 partitions. The kernel initializes the
-primary-master legacy ATA PIO device and mounts the boot disk, so `DIR` lists
-the current FAT32 directory and `CD` navigates short-name directories with
-`..`, `\`, and multi-level paths. QEMU uses the `pc` machine model to expose
-that IDE device. There is no dynamic driver loader yet.
+legacy ATA PIO positions and assigns C: through F: to mounted FAT32 disks.
+`DIR` lists the current directory, `CD` navigates short-name directories with
+`..`, `\`, and multi-level paths, and entering a drive name such as `D:` or
+`E:\APPS` switches drives. QEMU uses the `pc` machine model to expose IDE
+devices. USB mass storage is not supported yet because there is no USB host
+controller or mass-storage driver.
 The CLI loads version 1 `.AP` bytecode from its current FAT32 directory, then
 falls back to `/APPS`. It uses `fat32_find_file` and `fat32_read_file`, then
 validates the bounded 40-byte AP header, checksum, and instruction stream
 before running it through `AnnyOsApiV1` (`include/annyos/api.hpp`). The startup
-banner and help text plus `HELP`, `VER`, `MEM`, `DATE`, `TIME`, and `REBOOT`
+banner and help text plus `HELP`, `VER`, `MEM`, `DATE`, `TIME`, `REBOOT`,
+`SLEEP`, and `BEEP`
 are stored as AP applications under `/APPS`. AP is interpreted bytecode, not
 native x86: AnnyOS does not yet have paging, user mode, or process isolation.
 See `docs/AP_FORMAT.md`; the image also includes `/APPS/HELLO.AP` as a sample.
@@ -53,16 +57,19 @@ command labels, with cyan accents and aligned descriptions on the DOS blue
 background. The four original `.ttf` files are also packaged at
 `/fonts/segoe-ui/` in the FAT32 image.
 
-The build scripts produce the UEFI application and combined image, but do not
-create a disk image. The QEMU launch scripts require a bootable
-`build/AnnyOS.img` supplied separately. The standard x64 fallback path is
+The build scripts produce the UEFI application, combined image, and a
+bootable FAT32 disk at `build/AnnyOS.img`. The disk packages the EFI loader,
+drivers, fonts, and packed AP applications. The standard x64 fallback path is
 `EFI/BOOT/BOOTX64.EFI`.
 `bootx86.efi` and `EFI/BOOT/BOOTX86.EFI` are compatibility copies of that x64
 PE image, not 32-bit EFI applications. `annyos.bin` is also a copy of the
 current combined EFI loader/kernel image; it is not yet a separately loaded
-kernel. `driver/ata.sys`, `driver/fat32.sys`, and `driver/ps2kbd.sys` are PE32+
-modules with exported AnnyOS entry APIs. The current kernel still links the
-active input and FAT32 code statically because module loading is a later step.
+kernel. `driver/ata.sys`, `driver/fat32.sys`, `driver/ps2kbd.sys`,
+`driver/timer.sys`, `driver/serial.sys`, and `driver/speaker.sys` are PE32+
+modules with exported AnnyOS entry APIs. The kernel statically links active
+drivers; loading `.sys` modules at runtime is a later step. The PIT driver
+provides polling-based ticks and busy-wait sleeps until interrupt handling is
+implemented. COM1 logs are written to `build/serial.log` in QEMU.
 
 ## Build and boot
 
