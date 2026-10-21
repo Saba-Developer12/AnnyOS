@@ -1,0 +1,23 @@
+# Generated build outputs
+/build/
+/bin/
+*.img
+*.iso
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.map
+*.log
+
+# Editor and operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~

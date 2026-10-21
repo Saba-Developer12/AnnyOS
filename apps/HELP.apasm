@@ -1,0 +1,15 @@
+TITLE ANNYOS  |  COMMAND GUIDE
+------------------------------------------
+ROW COMMAND | DESCRIPTION
+ROW DIR | List the current directory
+ROW CD [DIR|..|\] | Change directory
+ROW CLS | Clear the screen
+ROW ECHO <TEXT> | Print a message
+ROW MEM | Show memory information
+ROW DATE | Show the current date
+ROW TIME | Show the current time
+ROW COLOR <THEME> | Set BLUE, GREEN, or AMBER
+ROW REBOOT | Restart the computer
+ROW NAME[.AP] | Run an app in this folder
+ROW VER | Show AnnyOS version
+ROW HELP | Show this command guide

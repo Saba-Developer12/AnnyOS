@@ -1,0 +1,35 @@
+name: Release AnnyOS and SDK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang lld gdisk dosfstools mtools python3
+
+      - name: Build AnnyOS UEFI application
+        run: make build
+
+      - name: Package AnnyOS SDK
+        run: python3 tools/package_sdk.py build/AnnyOS-SDK.zip
+
+      - name: Publish tagged release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/annyos.bin
+            build/AnnyOS-SDK.zip
+          generate_release_notes: true
