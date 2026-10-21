@@ -4,10 +4,10 @@ SHELL := /bin/sh
 all: build
 
 build:
-	./scripts/build.sh
+	bash ./scripts/build.sh
 
 run:
-	./scripts/run_qemu.sh
+	bash ./scripts/run_qemu.sh
 
 clean:
 	rm -rf build
