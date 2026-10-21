@@ -31,5 +31,9 @@ jobs:
         with:
           files: |
             build/annyos.bin
+            build/esp/EFI/BOOT/BOOTX64.EFI
+            build/fat32.sys
+            build/ata.sys
+            build/ps2kbd.sys
             build/AnnyOS-SDK.zip
           generate_release_notes: true
