@@ -9,6 +9,7 @@ import sys
 MAGIC = b"ANNYAP1\0"
 HEADER_SIZE = 40
 MAX_FILE_SIZE = 64 * 1024
+MAX_INSTRUCTIONS = 4096
 OP_PRINT = 0x01
 OP_API = 0x02
 OP_HELP_ROW = 0x03
@@ -37,12 +38,14 @@ def main() -> int:
 
     source = pathlib.Path(sys.argv[1]).read_text(encoding="ascii")
     code = bytearray()
+    instruction_count = 0
     for line in source.splitlines():
         if line.startswith("API "):
             service_name = line[4:].strip().upper()
             if service_name not in API_SERVICES:
                 raise SystemExit(f"Unknown AnnyOS API service: {service_name}")
             code.extend((OP_API, API_SERVICES[service_name]))
+            instruction_count += 1
             continue
         if line.startswith("ROW "):
             parts = line[4:].rsplit(" | ", maxsplit=1)
@@ -57,6 +60,7 @@ def main() -> int:
             code.extend((OP_HELP_ROW, len(command), len(description)))
             code.extend(command)
             code.extend(description)
+            instruction_count += 1
             continue
         if line.startswith("TITLE "):
             encoded = line[6:].encode("ascii")
@@ -64,12 +68,16 @@ def main() -> int:
                 raise SystemExit("AP title must contain at most 95 printable ASCII bytes")
             code.extend((OP_TITLE, len(encoded)))
             code.extend(encoded)
+            instruction_count += 1
             continue
         encoded = line.encode("ascii")
         if len(encoded) > 95 or any(byte < 32 or byte > 126 for byte in encoded):
             raise SystemExit("AP source lines must contain at most 95 printable ASCII bytes")
         code.extend((OP_PRINT, len(encoded)))
         code.extend(encoded)
+        instruction_count += 1
+    if instruction_count + 1 > MAX_INSTRUCTIONS:
+        raise SystemExit(f"AP application exceeds the {MAX_INSTRUCTIONS}-instruction limit")
     code.append(OP_EXIT)
 
     file_size = HEADER_SIZE + len(code)
