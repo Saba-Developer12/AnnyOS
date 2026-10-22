@@ -1,6 +1,6 @@
 # AnnyOS
 
-Current version: **0.2**
+Current version: **0.3.0**
 
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,
@@ -13,9 +13,15 @@ The project is an early development system; it is not yet a general-purpose OS.
 - DOS-style command processor with `DIR`, `CD`, `CLS`, `COLOR`, `ECHO`, `SLEEP`, and `BEEP`, plus 32-entry command history with arrow-key recall.
 - PS/2 keyboard, FAT32/ATA PIO storage, 1000 Hz PIT timer, COM1 serial logging,
   and PC speaker tone drivers.
+- Early xHCI controller discovery and HID boot-keyboard report decoding. USB
+  keyboard enumeration/transport is not implemented yet; PS/2 remains the
+  active input path. See [USB HID status](docs/USB_HID.md).
 - FAT32 volumes on legacy ATA devices can be selected as `C:` through `F:`.
 - AP version 1 bytecode applications, including `HELP`, `VER`, `MEM`, `DATE`,
   `TIME`, and `REBOOT`.
+- AADL preview compiler for classes, inheritance, compile-time objects/methods,
+  recursive imports, and AP v1 output, with core libraries under `apps/lib/`.
+  See [AADL documentation](docs/AADL.md).
 - Segoe UI font assets rasterized into a freestanding kernel header.
 - Build scripts for Windows PowerShell and Unix-like hosts, plus a QEMU launcher.
 

@@ -8,6 +8,7 @@
 #include "annyos/ps2_keyboard.hpp"
 #include "annyos/serial.hpp"
 #include "annyos/timer_pit.hpp"
+#include "annyos/usb_hid.hpp"
 
 namespace {
 
@@ -86,6 +87,19 @@ void debug_write(const char* text) {
         const uint8_t byte = static_cast<uint8_t>(*text++);
         if (g_serial_ready) annyos::serial::write_byte(byte);
         __asm__ volatile("outb %0, $0xe9" : : "a"(byte));
+    }
+}
+
+void debug_write_hex(uint64_t value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    char text[16];
+    for (uint32_t index = 0; index < 16; ++index) {
+        const uint32_t shift = (15 - index) * 4;
+        text[index] = digits[(value >> shift) & 0x0f];
+    }
+    for (char digit : text) {
+        if (g_serial_ready) annyos::serial::write_byte(static_cast<uint8_t>(digit));
+        __asm__ volatile("outb %0, $0xe9" : : "a"(static_cast<uint8_t>(digit)));
     }
 }
 
@@ -663,7 +677,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.2");
+            add_history_line(*state.console, "AnnyOS Version 0.3.0");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -1030,6 +1044,31 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                                : "AnnyOS: COM1 serial port unavailable\r\n");
     debug_write(timer_ready ? "AnnyOS: PIT timer initialized at 1000 Hz\r\n"
                             : "AnnyOS: PIT timer initialization failed\r\n");
+    annyos::input::usb::ControllerInfo usb_controller{};
+    const bool xhci_found = annyos::input::usb::probe_xhci(&usb_controller);
+    if (xhci_found) {
+        debug_write("AnnyOS: xHCI PCI function detected at ");
+        char pci_location[48] = "bus ";
+        uint32_t pci_location_length = 4;
+        append_decimal(pci_location, &pci_location_length, usb_controller.bus);
+        pci_location_length = append_text(pci_location, pci_location_length,
+                                          sizeof(pci_location), ", device ");
+        append_decimal(pci_location, &pci_location_length, usb_controller.device);
+        pci_location_length = append_text(pci_location, pci_location_length,
+                                          sizeof(pci_location), ", function ");
+        append_decimal(pci_location, &pci_location_length, usb_controller.function);
+        debug_write(pci_location);
+        debug_write("; MMIO BAR 0x");
+        debug_write_hex(usb_controller.mmio_base);
+        debug_write(". MMIO mapping and HID endpoint enumeration are not active yet.\r\n");
+    } else {
+        debug_write("AnnyOS: no usable xHCI PCI controller found; class matches: ");
+        char match_count[8] = {};
+        uint32_t match_count_length = 0;
+        append_decimal(match_count, &match_count_length, usb_controller.pci_xhci_matches);
+        debug_write(match_count);
+        debug_write("\r\n");
+    }
     if (boot_info == nullptr || boot_info->framebuffer.address == nullptr ||
         boot_info->framebuffer.width == 0 || boot_info->framebuffer.height == 0) {
         for (;;) __asm__ volatile("hlt");
@@ -1062,7 +1101,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.2]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.3.0]");
         add_history_line(console, "Type HELP for commands.");
     }
     redraw_history(boot_info->framebuffer, console, working_directory);

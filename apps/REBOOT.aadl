@@ -1,0 +1,11 @@
+import "lib/PowerControl.aadl";
+
+class RebootApp {
+    method run() {
+        let power = new PowerControl();
+        power.restart();
+    }
+}
+
+let app = new RebootApp();
+app.run();

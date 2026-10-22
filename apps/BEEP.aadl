@@ -1,0 +1,11 @@
+import "lib/AudioDevice.aadl";
+
+class BeepApp {
+    method run() {
+        let audio = new AudioDevice();
+        audio.beep();
+    }
+}
+
+let app = new BeepApp();
+app.run();

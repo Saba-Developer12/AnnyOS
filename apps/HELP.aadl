@@ -1,0 +1,11 @@
+import "lib/HelpSystem.aadl";
+
+class HelpApp {
+    method run() {
+        let help = new HelpSystem();
+        help.show();
+    }
+}
+
+let app = new HelpApp();
+app.run();

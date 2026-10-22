@@ -1,0 +1,12 @@
+import "lib/Console.aadl";
+
+class HelloApp {
+    method run() {
+        title("ANNYOS AADL");
+        print("Hello from AnnyOS!");
+        print("This app was compiled from AADL source.");
+    }
+}
+
+let app = new HelloApp();
+app.run();

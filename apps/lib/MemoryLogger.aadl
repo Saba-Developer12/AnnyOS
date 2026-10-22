@@ -1,0 +1,13 @@
+import "SysInfo.aadl";
+
+class MemoryLogger {
+    method report() {
+        title("MEMORY REPORT");
+        api(MEMORY);
+    }
+
+    method describeSystem() {
+        let info = new SysInfo();
+        info.describe();
+    }
+}

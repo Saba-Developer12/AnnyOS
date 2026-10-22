@@ -1,0 +1,6 @@
+class PowerControl {
+    method restart() {
+        title("Restarting AnnyOS");
+        api(REBOOT);
+    }
+}

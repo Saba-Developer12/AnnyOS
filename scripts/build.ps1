@@ -23,6 +23,7 @@ $sources = @(
     @{ Path = 'src\boot\efi_main.cpp'; Name = 'efi_main.obj' },
     @{ Path = 'src\boot\gop_helper.cpp'; Name = 'gop_helper.obj' },
     @{ Path = 'src\drivers\input\ps2_keyboard.cpp'; Name = 'ps2_keyboard.obj' },
+    @{ Path = 'src\drivers\input\usb_hid.cpp'; Name = 'usb_hid.obj' },
     @{ Path = 'src\drivers\storage\fat32.cpp'; Name = 'fat32.obj' },
     @{ Path = 'src\drivers\storage\ata_pio.cpp'; Name = 'ata_pio.obj' },
     @{ Path = 'src\drivers\system\timer_pit.cpp'; Name = 'timer_pit.obj' },
@@ -44,6 +45,7 @@ foreach ($source in $sources) {
 $moduleSources = @(
     @{ Path = 'src\drivers\storage\fat32_module.cpp'; Name = 'fat32_module.obj' },
     @{ Path = 'src\drivers\input\ps2kbd_module.cpp'; Name = 'ps2kbd_module.obj' },
+    @{ Path = 'src\drivers\input\usbhid_module.cpp'; Name = 'usbhid_module.obj' },
     @{ Path = 'src\drivers\system\timer_module.cpp'; Name = 'timer_module.obj' },
     @{ Path = 'src\drivers\system\serial_module.cpp'; Name = 'serial_module.obj' },
     @{ Path = 'src\drivers\system\speaker_module.cpp'; Name = 'speaker_module.obj' }
@@ -91,6 +93,15 @@ $keyboardModuleArgs = @(
 & $linker @keyboardModuleArgs
 if ($LASTEXITCODE -ne 0) { throw 'PS/2 keyboard driver module link failed.' }
 
+$usbHidModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_usbhid_probe', '/export:annyos_usbhid_decode_report',
+    "/out:$(Join-Path $buildDir 'usbhid.sys')",
+    (Join-Path $objectDir 'usb_hid.obj'), (Join-Path $objectDir 'usbhid_module.obj')
+)
+& $linker @usbHidModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'USB HID driver module link failed.' }
+
 $timerModuleArgs = @(
     '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
     '/export:annyos_timer_initialize', '/export:annyos_timer_ticks', '/export:annyos_timer_sleep_ms',
@@ -132,6 +143,7 @@ Copy-Item -LiteralPath (Join-Path $root 'font\segoe-ui\README.TXT') -Destination
 Copy-Item -LiteralPath (Join-Path $buildDir 'fat32.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'ata.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'ps2kbd.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'usbhid.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'timer.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'serial.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'speaker.sys') -Destination $driverDir -Force
@@ -143,12 +155,12 @@ $rootWsl = "/mnt/$driveLetter/" + $root.Substring(3).Replace('\', '/')
 if (-not (Test-Path $root)) {
     throw 'WSL with Python 3 is required to package AP files and create the FAT32 image.'
 }
-foreach ($appSource in Get-ChildItem -LiteralPath (Join-Path $root 'apps') -Filter '*.apasm' -File) {
+foreach ($appSource in Get-ChildItem -LiteralPath (Join-Path $root 'apps') -Filter '*.aadl' -File) {
     $appOutput = Join-Path $appsDir ($appSource.BaseName + '.AP')
     $appSourceWsl = "$rootWsl/apps/$($appSource.Name)"
     $appOutputWsl = "$rootWsl/build/esp/apps/$($appSource.BaseName).AP"
-    & wsl.exe python3 "$rootWsl/tools/ap_pack.py" $appSourceWsl $appOutputWsl
-    if ($LASTEXITCODE -ne 0) { throw "AP application packaging failed: $($appSource.Name)" }
+    & wsl.exe python3 "$rootWsl/tools/aadlc.py" $appSourceWsl $appOutputWsl
+    if ($LASTEXITCODE -ne 0) { throw "AADL compilation failed: $($appSource.Name)" }
 }
 $espDirWsl = "$rootWsl/build/esp"
 $imagePathWsl = "$rootWsl/build/AnnyOS.img"

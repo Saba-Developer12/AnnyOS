@@ -1,0 +1,7 @@
+class SecurityGuard {
+    method showStatus() {
+        title("APPLICATION SECURITY STATUS");
+        print("AP v1 uses a bounded bytecode interpreter.");
+        print("AP services run with kernel privileges; use trusted apps.");
+    }
+}

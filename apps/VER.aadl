@@ -1,0 +1,11 @@
+import "lib/SysInfo.aadl";
+
+class VersionApp {
+    method run() {
+        let info = new SysInfo();
+        info.version();
+    }
+}
+
+let app = new VersionApp();
+app.run();

@@ -1,0 +1,18 @@
+import "Console.aadl";
+
+class SysInfo {
+    method version() {
+        api(VERSION);
+    }
+
+    method memory() {
+        api(MEMORY);
+    }
+
+    method describe() {
+        let console = new Console();
+        console.showMessage();
+        api(VERSION);
+        api(MEMORY);
+    }
+}

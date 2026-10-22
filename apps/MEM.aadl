@@ -1,0 +1,11 @@
+import "lib/MemoryLogger.aadl";
+
+class MemoryApp {
+    method run() {
+        let logger = new MemoryLogger();
+        logger.report();
+    }
+}
+
+let app = new MemoryApp();
+app.run();

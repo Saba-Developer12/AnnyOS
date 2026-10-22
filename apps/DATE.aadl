@@ -1,0 +1,11 @@
+import "lib/TimeManager.aadl";
+
+class DateApp {
+    method run() {
+        let clock = new TimeManager();
+        clock.date();
+    }
+}
+
+let app = new DateApp();
+app.run();

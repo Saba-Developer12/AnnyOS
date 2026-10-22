@@ -55,16 +55,16 @@ hardware I/O; privileged actions are limited to these explicit API services.
 
 ## Build and launch
 
-`apps/*.apasm` contains the startup banner, command help, and the `VER`, `DATE`,
-`TIME`, `MEM`, `REBOOT`, `SLEEP`, and `BEEP` commands that were previously hardcoded in
-`main.cpp`. `tools/ap_pack.py` turns those sources into `.AP` files, which the
-disk image builder places under `/APPS`. Enter `CD APPS`, then `HELLO` to run
-the sample. Built-in command names also search `/APPS` automatically, so
-`HELP`, `VER`, `DATE`, `TIME`, `MEM`, `REBOOT`, `SLEEP`, and `BEEP` work from other directories.
-The command processor accepts FAT 8.3 filenames and passes up to eight
-arguments to the application. Arguments may be quoted with single or double
-quotes to include spaces. In `.apasm`, `ARG 0` prints the first argument;
-indexes are zero-based and limited to `0` through `7`.
+`apps/*.aadl` contains the startup banner, command help, system applications,
+and examples. `tools/aadlc.py` resolves imports recursively and compiles those
+sources into `.AP` files, which the disk image builder places under `/APPS`.
+Enter `CD APPS`, then `HELLO` to run the sample. Built-in command names also
+search `/APPS` automatically, so `HELP`, `VER`, `DATE`, `TIME`, `MEM`,
+`REBOOT`, `SLEEP`, and `BEEP` work from other directories. The command
+processor accepts FAT 8.3 filenames and passes up to eight arguments to the
+application. Arguments may be quoted with single or double quotes to include
+spaces. In AADL, `arg(0);` prints the first argument; indexes are zero-based
+and limited to `0` through `7`.
 
 The filesystem path is `fat32_find_file` followed by bounded
 `fat32_read_file`. The CLI loads the file into a fixed 64 KiB kernel buffer,

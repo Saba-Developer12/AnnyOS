@@ -1,0 +1,10 @@
+class AudioDevice {
+    method beep() {
+        api(BEEP);
+    }
+
+    method announce() {
+        title("ANNYOS AUDIO");
+        api(BEEP);
+    }
+}

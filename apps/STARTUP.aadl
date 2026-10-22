@@ -1,0 +1,14 @@
+import "lib/AppKernelCore.aadl";
+import "lib/SysInfo.aadl";
+import "lib/TimeManager.aadl";
+
+class StartupApp {
+    method run() {
+        let kernel = new AppKernelCore();
+        kernel.showWelcome();
+        print("Copyright S-DEV 2026");
+    }
+}
+
+let app = new StartupApp();
+app.run();

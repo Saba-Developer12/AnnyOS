@@ -1,0 +1,13 @@
+import "lib/TimeManager.aadl";
+
+class SleepApp {
+    method run() {
+        title("ANNYOS TIMER");
+        print("Waiting for 500 milliseconds...");
+        let clock = new TimeManager();
+        clock.delay();
+    }
+}
+
+let app = new SleepApp();
+app.run();

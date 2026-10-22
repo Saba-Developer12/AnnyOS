@@ -1,0 +1,13 @@
+class TimeManager {
+    method date() {
+        api(DATE);
+    }
+
+    method time() {
+        api(TIME);
+    }
+
+    method delay() {
+        api(SLEEP);
+    }
+}

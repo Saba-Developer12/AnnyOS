@@ -16,10 +16,11 @@ def main() -> int:
     files = [
         root / "include/annyos/api.hpp",
         root / "include/annyos/ap_format.hpp",
-        root / "tools/ap_pack.py",
+        root / "tools/aadlc.py",
         root / "docs/AP_FORMAT.md",
+        root / "docs/AADL.md",
         root / "docs/SDK.md",
-        *sorted((root / "apps").glob("*.apasm")),
+        *sorted((root / "apps").rglob("*.aadl")),
     ]
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in files:

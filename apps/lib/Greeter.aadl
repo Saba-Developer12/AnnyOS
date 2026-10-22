@@ -1,0 +1,11 @@
+class Greeter {
+    method greet() {
+        print("Hello from the imported Greeter class.");
+    }
+}
+
+class GreeterBase extends Greeter {
+    method announce() {
+        this.greet();
+    }
+}

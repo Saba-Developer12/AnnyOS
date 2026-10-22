@@ -1,0 +1,11 @@
+class UITheme {
+    method showClassic() {
+        title("ANNYOS CLASSIC CONSOLE");
+        print("The active colors are selected by the kernel COLOR command.");
+    }
+
+    method showMatrix() {
+        title("ANNYOS MATRIX CONSOLE");
+        print("Use COLOR MATRIX to enable the black and green theme.");
+    }
+}

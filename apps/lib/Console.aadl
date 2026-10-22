@@ -1,0 +1,10 @@
+class Console {
+    method welcome() {
+        print("AnnyOS Command Processor [Version 0.3.0]");
+        print("Type HELP for commands.");
+    }
+
+    method showMessage() {
+        print("Console output is provided by the AnnyOS AP host.");
+    }
+}

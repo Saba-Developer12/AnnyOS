@@ -1,0 +1,21 @@
+class HelpSystem {
+    method show() {
+        title("ANNYOS  |  COMMAND GUIDE");
+        row("COMMAND", "DESCRIPTION");
+        row("DIR", "List the current directory");
+        row("CD [DIR|..|\\]", "Change directory");
+        row("C: THROUGH F:", "Switch to a mounted ATA drive");
+        row("CLS", "Clear the screen");
+        row("ECHO <TEXT>", "Print a message");
+        row("SLEEP", "Wait for 500 milliseconds");
+        row("BEEP", "Play a short PC speaker tone");
+        row("MEM", "Show memory information");
+        row("DATE", "Show the current date");
+        row("TIME", "Show the current time");
+        row("COLOR <THEME>", "Set BLUE, GREEN, AMBER, or MATRIX");
+        row("REBOOT", "Restart the computer");
+        row("NAME[.AP]", "Run an app in this folder");
+        row("VER", "Show AnnyOS version");
+        row("HELP", "Show this command guide");
+    }
+}

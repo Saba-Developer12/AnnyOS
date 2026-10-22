@@ -1,0 +1,14 @@
+import "lib/AppKernelCore.aadl";
+import "lib/Greeter.aadl";
+
+class BrandedGreeter extends GreeterBase {
+    method greet() {
+        title("AADL OBJECT DEMO");
+        print("Hello from AnnyOS AADL.");
+    }
+}
+
+let greeter = new BrandedGreeter();
+greeter.announce();
+let kernel = new AppKernelCore();
+kernel.showSystemSummary();

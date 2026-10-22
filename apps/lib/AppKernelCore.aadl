@@ -1,0 +1,36 @@
+import "Console.aadl";
+import "SysInfo.aadl";
+import "TimeManager.aadl";
+import "PowerControl.aadl";
+import "HelpSystem.aadl";
+import "AudioDevice.aadl";
+import "SecurityGuard.aadl";
+import "MemoryLogger.aadl";
+import "UITheme.aadl";
+
+class AppKernelCore {
+    method showWelcome() {
+        let console = new Console();
+        console.welcome();
+    }
+
+    method showSystemSummary() {
+        let info = new SysInfo();
+        info.version();
+        let clock = new TimeManager();
+        clock.date();
+        clock.time();
+        let memory = new MemoryLogger();
+        memory.report();
+    }
+
+    method showHelp() {
+        let help = new HelpSystem();
+        help.show();
+    }
+
+    method showSafetyNotice() {
+        let guard = new SecurityGuard();
+        guard.showStatus();
+    }
+}
