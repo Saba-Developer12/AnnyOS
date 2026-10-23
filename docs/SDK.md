@@ -19,11 +19,15 @@ bindings are resolved by the compiler and method bodies are inlined. See
 [`AADL.md`](AADL.md) for the syntax and limits.
 
 AP programs may write text, draw aligned help rows, or call the documented
-version 1 system services. The API version in each AP header must be supported
-by the target AnnyOS kernel.
+version 1 and version 2 system services. The API version in each AP header must
+be supported by the target AnnyOS kernel.
 
 AADL exposes `print`, `title`, `row`, `api`, and `arg` statements. Applications
 can print up to eight command-line arguments using indexes `0` through `7`.
-The current service set includes version/date/time/memory, reboot, a short
-sleep, and a PC-speaker tone. Imports resolve recursively relative to each
-source file; `-I DIR` adds an import search root.
+The service set includes version/date/time/memory, reboot, a short sleep, a
+PC-speaker tone, and ConfigSave list/get/set operations for console themes.
+ConfigSave calls require API v2; the compiler records that minimum version in
+the AP header. The SDK's `apps/lib/ConfigSave.aadl` module exposes these calls
+as a `ConfigSave` class. Imports resolve recursively relative to each source
+file; `-I DIR` adds an import search root. `apps/CFGDEMO.aadl` is a small
+example that uses the class to list persisted settings.

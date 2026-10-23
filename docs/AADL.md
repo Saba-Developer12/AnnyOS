@@ -52,7 +52,11 @@ Supported statements are `print("text");`, `title("text");`,
 runtime parameters, and may call other methods. Inheritance uses
 `class Child extends Parent { ... }`; a method declared in the child overrides
 the inherited method. API names are `VERSION`, `DATE`, `TIME`, `MEMORY`,
-`REBOOT`, `SLEEP`, and `BEEP`.
+`REBOOT`, `SLEEP`, `BEEP`, `CONFIG_LIST`, `CONFIG_GET_THEME`,
+`CONFIG_SET_THEME_BLUE`, `CONFIG_SET_THEME_GREEN`, `CONFIG_SET_THEME_AMBER`,
+and `CONFIG_SET_THEME_MATRIX`. ConfigSave services require API v2; the compiler
+sets the AP header's minimum API version automatically. Import
+`lib/ConfigSave.aadl` to use the `ConfigSave` wrapper class.
 
 ## AP v1 execution model and bounds
 

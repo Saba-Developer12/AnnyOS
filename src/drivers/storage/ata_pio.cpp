@@ -26,6 +26,10 @@ void out8(uint16_t port, uint8_t value) {
     __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
+void out16(uint16_t port, uint16_t value) {
+    __asm__ volatile("outw %0, %1" : : "a"(value), "Nd"(port));
+}
+
 uint16_t in16(uint16_t port) {
     uint16_t value;
     __asm__ volatile("inw %1, %0" : "=a"(value) : "Nd"(port));
@@ -78,6 +82,7 @@ bool ata_pio_initialize(uint8_t channel, uint8_t drive, AtaPioDevice* state, Blo
     device->sector_count = sectors;
     device->sector_size = 512;
     device->read_sector = ata_pio_read_sector;
+    device->write_sector = ata_pio_write_sector;
     return true;
 }
 
@@ -107,6 +112,32 @@ bool ata_pio_read_sector(void* context, uint64_t lba, uint8_t* destination) {
     return true;
 }
 
+bool ata_pio_write_sector(void* context, uint64_t lba, const uint8_t* source) {
+    auto* state = static_cast<AtaPioDevice*>(context);
+    if (state == nullptr || source == nullptr || lba >= state->sector_count ||
+        lba > 0x0fffffffull) return false;
+
+    out8(state->io_base + kDrive, static_cast<uint8_t>(0xe0 | (state->drive << 4) |
+                                                        ((lba >> 24) & 0x0f)));
+    io_delay(*state);
+    if (!wait_status(*state, false)) return false;
+    out8(state->io_base + kSectorCount, 1);
+    out8(state->io_base + kLbaLow, static_cast<uint8_t>(lba));
+    out8(state->io_base + kLbaMid, static_cast<uint8_t>(lba >> 8));
+    out8(state->io_base + kLbaHigh, static_cast<uint8_t>(lba >> 16));
+    out8(state->io_base + kCommand, 0x30); // WRITE SECTORS (28-bit LBA)
+    if (!wait_status(*state, true)) return false;
+
+    for (uint32_t word = 0; word < 256; ++word) {
+        const uint16_t value = static_cast<uint16_t>(source[word * 2]) |
+                               (static_cast<uint16_t>(source[word * 2 + 1]) << 8);
+        out16(state->io_base + kData, value);
+    }
+    if (!wait_status(*state, false)) return false;
+    out8(state->io_base + kCommand, 0xe7); // FLUSH CACHE
+    return wait_status(*state, false);
+}
+
 } // namespace annyos::storage
 
 extern "C" bool annyos_ata_pio_initialize(uint8_t channel, uint8_t drive,
@@ -117,4 +148,8 @@ extern "C" bool annyos_ata_pio_initialize(uint8_t channel, uint8_t drive,
 
 extern "C" bool annyos_ata_pio_read_sector(void* context, uint64_t lba, uint8_t* destination) {
     return annyos::storage::ata_pio_read_sector(context, lba, destination);
+}
+
+extern "C" bool annyos_ata_pio_write_sector(void* context, uint64_t lba, const uint8_t* source) {
+    return annyos::storage::ata_pio_write_sector(context, lba, source);
 }

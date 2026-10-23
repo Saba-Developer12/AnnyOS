@@ -4,7 +4,7 @@
 
 namespace annyos::api {
 
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 
 enum class Service : uint8_t {
     version = 1,
@@ -14,6 +14,12 @@ enum class Service : uint8_t {
     reboot = 5,
     sleep = 6,
     beep = 7,
+    config_list = 8,
+    config_get_theme = 9,
+    config_set_theme_blue = 10,
+    config_set_theme_green = 11,
+    config_set_theme_amber = 12,
+    config_set_theme_matrix = 13,
 };
 
 using ConsoleWriteLine = bool (*)(void* context, const char* text, uint8_t length);
@@ -22,7 +28,8 @@ using ConsoleWriteHelpRow = bool (*)(void* context, const char* command, uint8_t
                                      const char* description, uint8_t description_length);
 using InvokeService = bool (*)(void* context, Service service);
 
-// Stable host table presented to version 1 .AP bytecode applications.
+// Stable host table presented to .AP bytecode applications. API v2 extends
+// the service identifiers while retaining this v1 table layout.
 struct AnnyOsApiV1 {
     // Hosts may append fields in later versions; the V1 prefix remains stable.
     uint32_t structure_size;

@@ -71,6 +71,32 @@ drivers; loading `.sys` modules at runtime is a later step. The PIT driver
 provides polling-based ticks and busy-wait sleeps until interrupt handling is
 implemented. COM1 logs are written to `build/serial.log` in QEMU.
 
+## Built-in driver registry (current foundation)
+
+`include/annyos/driver_registry.hpp` and `src/kernel/driver_registry.cpp`
+provide a fixed-capacity registry for up to 128 built-in drivers and 128
+versioned service interfaces. It uses no heap or hosted runtime. Each driver
+declares service requirements, receives an initialization callback, and may
+publish services only while it is being initialized. Missing dependencies
+leave a driver blocked; callback failures are recorded and any services
+published by that failed initialization are removed.
+
+Kernel startup now registers COM1, PIT, PS/2 keyboard, ATA PIO, and FAT32
+separately. FAT32 declares an ATA block-device service dependency, and the
+command loop obtains keyboard input through the registry's versioned service
+contract. This is a static startup registry, not a native `.sys` loader: the
+current PE32+ `.sys` artifacts are packaged exports and are not mapped or
+executed by the kernel. Runtime loading will require a defined module ABI,
+relocation/import handling, memory ownership, unload rules, and fault
+containment before external modules can be trusted.
+
+AADL remains a bounded source compiler targeting AP v1 interpreted bytecode.
+Its classes and inheritance are compile-time constructs; it does not yet
+provide runtime objects, typed variables, parameters, branches, loops, or
+native code generation. Those features need a new AP format version and a
+validator/interpreter update before they can be safely exposed. See
+`docs/ARCHITECTURE_ROADMAP.md` for staged expansion boundaries.
+
 ## Build and boot
 
 On Windows, run `scripts/build.ps1` and then `scripts/run_qemu.ps1`. The build

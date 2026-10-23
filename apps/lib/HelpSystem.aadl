@@ -13,6 +13,8 @@ class HelpSystem {
         row("DATE", "Show the current date");
         row("TIME", "Show the current time");
         row("COLOR <THEME>", "Set BLUE, GREEN, AMBER, or MATRIX");
+        row("CONFIGSAVE", "View or change saved settings");
+        row("CFGDEMO", "Show ConfigSave API state");
         row("REBOOT", "Restart the computer");
         row("NAME[.AP]", "Run an app in this folder");
         row("VER", "Show AnnyOS version");

@@ -11,6 +11,7 @@ struct BlockDevice {
     uint64_t sector_count;
     uint32_t sector_size;
     bool (*read_sector)(void* context, uint64_t lba, uint8_t* destination);
+    bool (*write_sector)(void* context, uint64_t lba, const uint8_t* source);
 };
 
 } // namespace annyos::storage

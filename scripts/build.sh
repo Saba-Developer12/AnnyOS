@@ -18,6 +18,8 @@ clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/timer_pit.cpp" -o "$BUILD/ob
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/serial_com1.cpp" -o "$BUILD/obj/serial_com1.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/pc_speaker.cpp" -o "$BUILD/obj/pc_speaker.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/ap_loader.cpp" -o "$BUILD/obj/ap_loader.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/config_save.cpp" -o "$BUILD/obj/config_save.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/driver_registry.cpp" -o "$BUILD/obj/driver_registry.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/fat32_module.cpp" -o "$BUILD/obj/fat32_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/input/ps2kbd_module.cpp" -o "$BUILD/obj/ps2kbd_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/input/usbhid_module.cpp" -o "$BUILD/obj/usbhid_module.obj"
@@ -37,15 +39,18 @@ MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link \
   "$BUILD/obj/ata_pio.obj" "$BUILD/obj/timer_pit.obj" \
   "$BUILD/obj/serial_com1.obj" "$BUILD/obj/pc_speaker.obj" \
   "$BUILD/obj/ap_loader.obj" \
+  "$BUILD/obj/config_save.obj" \
+  "$BUILD/obj/driver_registry.obj" \
   "$BUILD/obj/runtime.obj" "$BUILD/obj/kernel_main.obj"
 
 MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
   /dynamicbase /timestamp:0 /export:annyos_fat32_mount /export:annyos_fat32_list_root \
   /export:annyos_fat32_list_directory /export:annyos_fat32_find_file \
-  /export:annyos_fat32_read_file \
+  /export:annyos_fat32_read_file /export:annyos_fat32_write_file \
   "/out:$BUILD/fat32.sys" "$BUILD/obj/fat32.obj" "$BUILD/obj/fat32_module.obj"
 MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
   /dynamicbase /timestamp:0 /export:annyos_ata_pio_initialize /export:annyos_ata_pio_read_sector \
+  /export:annyos_ata_pio_write_sector \
   "/out:$BUILD/ata.sys" "$BUILD/obj/ata_pio.obj"
 MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
   /dynamicbase /timestamp:0 /export:annyos_ps2kbd_initialize /export:annyos_ps2kbd_poll \

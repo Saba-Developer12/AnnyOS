@@ -31,3 +31,10 @@ extern "C" bool annyos_fat32_read_file(const annyos::storage::Fat32Volume* volum
     return volume != nullptr && entry != nullptr &&
            annyos::storage::fat32_read_file(*volume, *entry, output, capacity, bytes_read);
 }
+
+extern "C" bool annyos_fat32_write_file(const annyos::storage::Fat32Volume* volume,
+                                        uint32_t directory_cluster, const char* short_name,
+                                        const uint8_t* data, uint32_t size) {
+    return volume != nullptr &&
+           annyos::storage::fat32_write_file(*volume, directory_cluster, short_name, data, size);
+}

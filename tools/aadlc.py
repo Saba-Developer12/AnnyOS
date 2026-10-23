@@ -44,7 +44,15 @@ API_SERVICES = {
     "REBOOT": 5,
     "SLEEP": 6,
     "BEEP": 7,
+    "CONFIG_LIST": 8,
+    "CONFIG_GET_THEME": 9,
+    "CONFIG_SET_THEME_BLUE": 10,
+    "CONFIG_SET_THEME_GREEN": 11,
+    "CONFIG_SET_THEME_AMBER": 12,
+    "CONFIG_SET_THEME_MATRIX": 13,
 }
+API_SERVICE_VERSIONS = {name: (1 if service <= 7 else 2)
+                        for name, service in API_SERVICES.items()}
 
 
 class CompileError(Exception):
@@ -435,6 +443,7 @@ class Compiler:
         self.classes: dict[str, ClassDecl] = {}
         self.code = bytearray()
         self.instruction_count = 0
+        self.required_api_version = 1
         self._merge_classes(entry, set())
         self._validate_inheritance()
 
@@ -550,6 +559,8 @@ class Compiler:
                 service = statement.values[0]
                 if service not in API_SERVICES:
                     raise fail(statement.location, f"unknown AnnyOS API service {service!r}")
+                self.required_api_version = max(
+                    self.required_api_version, API_SERVICE_VERSIONS[service])
                 self._emit(bytes((OP_API, API_SERVICES[service])), statement.location)
             elif statement.kind == "arg":
                 index = statement.values[0]
@@ -576,7 +587,7 @@ class Compiler:
             len(code),
             0,
             fnv1a(code),
-            1,
+            self.required_api_version,
         )
         if len(header) != HEADER_SIZE:
             raise CompileError("internal error: AP header size mismatch")

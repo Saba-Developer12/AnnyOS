@@ -44,12 +44,13 @@ corruption; it is not a signature or authenticity check.
 
 There are at most 4096 instructions, counting `EXIT`. Each `PRINT` line is
 limited to 95 bytes.
-API service IDs in version 1 are `1 VERSION`, `2 DATE`, `3 TIME`, `4 MEMORY`,
-`5 REBOOT`, `6 SLEEP`, and `7 BEEP`. `SLEEP` waits for 500 ms and `BEEP`
-plays the standard short PC-speaker tone. The service table is defined in `include/annyos/api.hpp`. Its
-V1 prefix remains stable as newer API versions append fields. A V1 application
-can run on a newer host version if that host supports the API version required
-in the application's header.
+API v1 service IDs are `1 VERSION`, `2 DATE`, `3 TIME`, `4 MEMORY`, `5 REBOOT`,
+`6 SLEEP`, and `7 BEEP`. API v2 adds `8 CONFIG_LIST`, `9 CONFIG_GET_THEME`, and
+`10`-`13 CONFIG_SET_THEME_BLUE/GREEN/AMBER/MATRIX`. `SLEEP` waits for 500 ms;
+`BEEP` plays the standard short PC-speaker tone. ConfigSave settings are stored
+in `C:\ANNYOS.CFG`. The AP file format remains v1; its minimum API version field
+is set to 2 when an application uses a v2 service. The service table is defined
+in `include/annyos/api.hpp`. V1 applications continue to run on the newer host.
 Applications have no jumps, pointers, native calls, disk writes, or direct
 hardware I/O; privileged actions are limited to these explicit API services.
 

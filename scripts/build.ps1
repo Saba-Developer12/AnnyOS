@@ -30,6 +30,8 @@ $sources = @(
     @{ Path = 'src\drivers\system\serial_com1.cpp'; Name = 'serial_com1.obj' },
     @{ Path = 'src\drivers\system\pc_speaker.cpp'; Name = 'pc_speaker.obj' },
     @{ Path = 'src\kernel\ap_loader.cpp'; Name = 'ap_loader.obj' },
+    @{ Path = 'src\kernel\config_save.cpp'; Name = 'config_save.obj' },
+    @{ Path = 'src\kernel\driver_registry.cpp'; Name = 'driver_registry.obj' },
     @{ Path = 'src\kernel\runtime.cpp'; Name = 'runtime.obj' },
     @{ Path = 'src\kernel\main.cpp'; Name = 'kernel_main.obj' }
 )
@@ -70,6 +72,7 @@ $fat32ModuleArgs = @(
     '/export:annyos_fat32_mount', '/export:annyos_fat32_list_root',
     '/export:annyos_fat32_list_directory',
     '/export:annyos_fat32_find_file', '/export:annyos_fat32_read_file',
+    '/export:annyos_fat32_write_file',
     "/out:$(Join-Path $buildDir 'fat32.sys')",
     (Join-Path $objectDir 'fat32.obj'), (Join-Path $objectDir 'fat32_module.obj')
 )
@@ -79,6 +82,7 @@ if ($LASTEXITCODE -ne 0) { throw 'FAT32 driver module link failed.' }
 $ataModuleArgs = @(
     '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
     '/export:annyos_ata_pio_initialize', '/export:annyos_ata_pio_read_sector',
+    '/export:annyos_ata_pio_write_sector',
     "/out:$(Join-Path $buildDir 'ata.sys')", (Join-Path $objectDir 'ata_pio.obj')
 )
 & $linker @ataModuleArgs

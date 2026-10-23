@@ -2,6 +2,9 @@
 #include "annyos/api.hpp"
 #include "annyos/ata_pio.hpp"
 #include "annyos/ap_format.hpp"
+#include "annyos/config_save.hpp"
+#include "annyos/driver_registry.hpp"
+#include "annyos/driver_services.hpp"
 #include "annyos/fat32.hpp"
 #include "annyos/font_data.hpp"
 #include "annyos/pc_speaker.hpp"
@@ -58,6 +61,7 @@ struct DriveState {
     annyos::storage::AtaPioDevice ata;
     annyos::storage::BlockDevice block;
     annyos::storage::Fat32Volume volume;
+    bool ata_ready;
     bool mounted;
 };
 
@@ -71,6 +75,7 @@ struct KernelApiContext {
 ConsoleState g_console;
 WorkingDirectory g_working_directory;
 DriveState g_drives[kAtaDriveSlots];
+annyos::config::ConfigSave g_config_save{};
 uint8_t g_ap_image[kApBufferCapacity];
 Color g_screen_color = kDefaultScreenColor;
 Color g_text_color = kDefaultTextColor;
@@ -79,8 +84,26 @@ Color g_input_color = kDefaultInputColor;
 Color g_help_title_color = kDefaultHelpTitleColor;
 bool g_monochrome_theme = false;
 bool g_serial_ready = false;
+annyos::drivers::DriverRegistry g_driver_registry{};
+
+bool driver_get_fat32_volume(void* context, uint8_t drive_index,
+                             const annyos::storage::Fat32Volume** volume);
+bool driver_get_ata_device(void* context, uint8_t drive_index,
+                           const annyos::storage::BlockDevice** device);
+const annyos::drivers::service::SerialOutputV1 g_serial_service{
+    annyos::serial::write_byte, annyos::serial::write};
+const annyos::drivers::service::MonotonicTimerV1 g_timer_service{
+    annyos::timer::ticks, annyos::timer::sleep_ms};
+const annyos::drivers::service::KeyboardInputV1 g_keyboard_service{
+    annyos::input::poll_ps2_keyboard};
+annyos::drivers::service::Fat32DriveSetV1 g_fat32_service{
+    g_drives, driver_get_fat32_volume};
+annyos::drivers::service::AtaDriveSetV1 g_ata_service{
+    g_drives, driver_get_ata_device};
 
 bool equal_ignore_case(const char* left, const char* right);
+uint32_t append_text(char* destination, uint32_t length, uint32_t capacity, const char* text);
+void append_decimal(char* output, uint32_t* length, uint64_t value);
 
 void debug_write(const char* text) {
     while (*text != '\0') {
@@ -88,6 +111,115 @@ void debug_write(const char* text) {
         if (g_serial_ready) annyos::serial::write_byte(byte);
         __asm__ volatile("outb %0, $0xe9" : : "a"(byte));
     }
+}
+
+bool driver_get_fat32_volume(void* context, uint8_t drive_index,
+                             const annyos::storage::Fat32Volume** volume) {
+    if (context == nullptr || volume == nullptr || drive_index >= kAtaDriveSlots) return false;
+    const auto* drives = static_cast<const DriveState*>(context);
+    if (!drives[drive_index].mounted) return false;
+    *volume = &drives[drive_index].volume;
+    return true;
+}
+
+bool driver_get_ata_device(void* context, uint8_t drive_index,
+                           const annyos::storage::BlockDevice** device) {
+    if (context == nullptr || device == nullptr || drive_index >= kAtaDriveSlots) return false;
+    const auto* drives = static_cast<const DriveState*>(context);
+    if (!drives[drive_index].ata_ready) return false;
+    *device = &drives[drive_index].block;
+    return true;
+}
+
+bool initialize_serial_driver(void*, annyos::drivers::DriverRegistry& registry) {
+    g_serial_ready = annyos::serial::initialize(0x3f8);
+    if (!g_serial_ready || !registry.publish(annyos::drivers::ServiceId::serial_output,
+                                              1, &g_serial_service)) return false;
+    debug_write("AnnyOS: COM1 serial driver started\r\n");
+    return true;
+}
+
+bool initialize_timer_driver(void*, annyos::drivers::DriverRegistry& registry) {
+    if (!annyos::timer::initialize(1000) ||
+        !registry.publish(annyos::drivers::ServiceId::monotonic_timer, 1, &g_timer_service)) {
+        return false;
+    }
+    debug_write("AnnyOS: PIT timer driver started at 1000 Hz\r\n");
+    return true;
+}
+
+bool initialize_keyboard_driver(void*, annyos::drivers::DriverRegistry& registry) {
+    annyos::input::initialize_ps2_keyboard();
+    return registry.publish(annyos::drivers::ServiceId::keyboard_input, 1, &g_keyboard_service);
+}
+
+bool initialize_ata_driver(void*, annyos::drivers::DriverRegistry& registry) {
+    for (uint8_t index = 0; index < kAtaDriveSlots; ++index) {
+        DriveState& drive = g_drives[index];
+        const uint8_t channel = index / 2;
+        const uint8_t device = index % 2;
+        drive.ata_ready = annyos::storage::ata_pio_initialize(
+            channel, device, &drive.ata, &drive.block);
+        if (drive.ata_ready) {
+            debug_write(index == 0 ? "AnnyOS: ATA drive C: detected\r\n"
+                                   : index == 1 ? "AnnyOS: ATA drive D: detected\r\n"
+                                   : index == 2 ? "AnnyOS: ATA drive E: detected\r\n"
+                                                : "AnnyOS: ATA drive F: detected\r\n");
+        }
+    }
+    return registry.publish(annyos::drivers::ServiceId::ata_devices, 1, &g_ata_service);
+}
+
+bool initialize_fat32_driver(void*, annyos::drivers::DriverRegistry& registry) {
+    const auto* ata_record = registry.query(annyos::drivers::ServiceId::ata_devices, 1);
+    if (ata_record == nullptr) return false;
+    const auto* ata = static_cast<const annyos::drivers::service::AtaDriveSetV1*>(
+        ata_record->interface_pointer);
+    for (uint8_t index = 0; index < kAtaDriveSlots; ++index) {
+        const annyos::storage::BlockDevice* device = nullptr;
+        if (!ata->get_device(ata->context, index, &device)) continue;
+        DriveState& drive = g_drives[index];
+        drive.mounted = annyos::storage::fat32_mount(*device, &drive.volume);
+        if (drive.mounted) {
+            debug_write(index == 0 ? "AnnyOS: FAT32 drive C: mounted\r\n"
+                                   : index == 1 ? "AnnyOS: FAT32 drive D: mounted\r\n"
+                                   : index == 2 ? "AnnyOS: FAT32 drive E: mounted\r\n"
+                                                : "AnnyOS: FAT32 drive F: mounted\r\n");
+        }
+    }
+    if (!g_drives[0].mounted) debug_write("AnnyOS: no FAT32 boot disk found\r\n");
+    return registry.publish(annyos::drivers::ServiceId::fat32_volumes, 1, &g_fat32_service);
+}
+
+void initialize_kernel_drivers() {
+    using namespace annyos::drivers;
+    static const ServiceRequirement fat32_requirements[] = {
+        {ServiceId::ata_devices, 1},
+    };
+    static const DriverDescriptor descriptors[] = {
+        {DriverId::serial_com1, "serial.com1", 1, nullptr, 0, initialize_serial_driver},
+        {DriverId::timer_pit, "timer.pit", 1, nullptr, 0, initialize_timer_driver},
+        {DriverId::ps2_keyboard, "input.ps2kbd", 1, nullptr, 0, initialize_keyboard_driver},
+        {DriverId::ata_pio, "storage.ata-pio", 1, nullptr, 0, initialize_ata_driver},
+        {DriverId::fat32, "filesystem.fat32", 1, fat32_requirements, 1, initialize_fat32_driver},
+    };
+
+    g_driver_registry.reset();
+    for (const DriverDescriptor& descriptor : descriptors) {
+        if (!g_driver_registry.register_driver(descriptor)) {
+            debug_write("AnnyOS: driver registry rejected a built-in driver\r\n");
+        }
+    }
+    const InitializationSummary summary = g_driver_registry.initialize_all(nullptr);
+    char message[64] = "AnnyOS: driver startup complete: ";
+    uint32_t length = 33;
+    append_decimal(message, &length, summary.started);
+    length = append_text(message, length, sizeof(message), " started, ");
+    append_decimal(message, &length, summary.failed);
+    length = append_text(message, length, sizeof(message), " failed, ");
+    append_decimal(message, &length, summary.blocked);
+    append_text(message, length, sizeof(message), " blocked\r\n");
+    debug_write(message);
 }
 
 void debug_write_hex(uint64_t value) {
@@ -291,6 +423,8 @@ void add_builtin_help(ConsoleState& console) {
     add_help_row(console, "DATE", "Show the current date");
     add_help_row(console, "TIME", "Show the current time");
     add_help_row(console, "COLOR <THEME>", "Set BLUE, GREEN, AMBER, or MATRIX");
+    add_help_row(console, "CONFIGSAVE", "View or change saved settings");
+    add_help_row(console, "CFGDEMO", "Show ConfigSave API state");
     add_help_row(console, "REBOOT", "Restart the computer");
     add_help_row(console, "NAME[.AP]", "Run an app from the current folder");
     add_help_row(console, "VER", "Show AnnyOS version");
@@ -425,7 +559,7 @@ bool is_default_text_color(Color color) {
            color.b == kDefaultTextColor.b;
 }
 
-void set_console_color(ConsoleState& console, const char* name) {
+bool apply_console_theme(const char* name) {
     if (equal_ignore_case(name, "blue")) {
         g_screen_color = kDefaultScreenColor;
         g_text_color = kDefaultTextColor;
@@ -455,12 +589,32 @@ void set_console_color(ConsoleState& console, const char* name) {
         g_help_title_color = {0, 255, 100};
         g_monochrome_theme = true;
     } else {
+        return false;
+    }
+    return true;
+}
+
+const char* canonical_console_theme(const char* name) {
+    if (equal_ignore_case(name, "blue")) return "BLUE";
+    if (equal_ignore_case(name, "green")) return "GREEN";
+    if (equal_ignore_case(name, "amber")) return "AMBER";
+    if (equal_ignore_case(name, "matrix") || equal_ignore_case(name, "black")) return "MATRIX";
+    return nullptr;
+}
+
+void set_console_color(ConsoleState& console, const char* name) {
+    const char* theme = canonical_console_theme(name);
+    if (theme == nullptr || !apply_console_theme(theme)) {
         add_history_line(console, "Usage: COLOR BLUE | GREEN | AMBER | MATRIX");
         return;
     }
+    if (!annyos::config::config_save_set_theme(&g_config_save, theme)) {
+        add_history_line(console, "Theme applied, but settings could not be saved.", g_prompt_color);
+        return;
+    }
     add_history_line(console, g_monochrome_theme
-        ? "MATRIX theme active: black background, green text."
-        : "Console colors updated.", g_prompt_color);
+        ? "MATRIX theme active and saved."
+        : "Console theme applied and saved.", g_prompt_color);
 }
 
 [[noreturn]] void reboot_system() {
@@ -677,7 +831,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.3.0");
+            add_history_line(*state.console, "AnnyOS Version 0.4.0");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -706,6 +860,34 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
             } else {
                 add_history_line(*state.console, "Beep.", g_prompt_color);
             }
+            return true;
+        case annyos::api::Service::config_list: {
+            add_history_line(*state.console, "ANNYOS | PERSISTENT SETTINGS", g_help_title_color, true);
+            char line[40] = "THEME=";
+            append_text(line, 6, sizeof(line),
+                        annyos::config::config_save_active_theme(&g_config_save));
+            add_history_line(*state.console, line, g_prompt_color);
+            add_history_line(*state.console, "File: C:\\ANNYOS.CFG");
+            return true;
+        }
+        case annyos::api::Service::config_get_theme: {
+            char line[40] = "THEME=";
+            append_text(line, 6, sizeof(line),
+                        annyos::config::config_save_active_theme(&g_config_save));
+            add_history_line(*state.console, line, g_prompt_color);
+            return true;
+        }
+        case annyos::api::Service::config_set_theme_blue:
+            set_console_color(*state.console, "BLUE");
+            return true;
+        case annyos::api::Service::config_set_theme_green:
+            set_console_color(*state.console, "GREEN");
+            return true;
+        case annyos::api::Service::config_set_theme_amber:
+            set_console_color(*state.console, "AMBER");
+            return true;
+        case annyos::api::Service::config_set_theme_matrix:
+            set_console_color(*state.console, "MATRIX");
             return true;
     }
     return false;
@@ -867,6 +1049,70 @@ bool switch_drive(ConsoleState& console, DriveState* drives, WorkingDirectory* w
     return true;
 }
 
+bool handle_configsave_command(ConsoleState& console, const char* arguments) {
+    while (*arguments == ' ') ++arguments;
+    if (*arguments == '\0' || command_equals(arguments, "list")) {
+        add_history_line(console, "ANNYOS | PERSISTENT SETTINGS", g_help_title_color, true);
+        char line[40] = "THEME=";
+        append_text(line, 6, sizeof(line),
+                    annyos::config::config_save_active_theme(&g_config_save));
+        add_history_line(console, line, g_prompt_color);
+        add_history_line(console, "File: C:\\ANNYOS.CFG");
+        add_history_line(console, "Use CONFIGSAVE GET THEME or SET THEME <VALUE>.");
+        return true;
+    }
+
+    if (command_starts_with(arguments, "get ")) {
+        const char* key = arguments + 4;
+        while (*key == ' ') ++key;
+        const char* end = key;
+        while (*end != '\0' && *end != ' ') ++end;
+        if (end == key || *end != '\0') {
+            add_history_line(console, "Usage: CONFIGSAVE GET THEME");
+        } else if (!equal_ignore_case(key, "theme")) {
+            add_history_line(console, "Unknown setting. Supported key: THEME");
+        } else {
+            char line[40] = "THEME=";
+            append_text(line, 6, sizeof(line),
+                        annyos::config::config_save_active_theme(&g_config_save));
+            add_history_line(console, line, g_prompt_color);
+        }
+        return true;
+    }
+
+    if (command_starts_with(arguments, "set ")) {
+        const char* cursor = arguments + 4;
+        while (*cursor == ' ') ++cursor;
+        char key[16]{};
+        uint32_t key_length = 0;
+        while (*cursor != '\0' && *cursor != ' ' && *cursor != '=' &&
+               key_length + 1 < sizeof(key)) {
+            key[key_length++] = *cursor++;
+        }
+        key[key_length] = '\0';
+        if (*cursor == '=') ++cursor;
+        while (*cursor == ' ') ++cursor;
+        char value[16]{};
+        uint32_t value_length = 0;
+        while (*cursor != '\0' && *cursor != ' ' && value_length + 1 < sizeof(value)) {
+            value[value_length++] = *cursor++;
+        }
+        value[value_length] = '\0';
+        while (*cursor == ' ') ++cursor;
+        if (key_length == 0 || value_length == 0 || *cursor != '\0') {
+            add_history_line(console, "Usage: CONFIGSAVE SET THEME <VALUE>");
+        } else if (!equal_ignore_case(key, "theme")) {
+            add_history_line(console, "Unknown setting. Supported key: THEME");
+        } else {
+            set_console_color(console, value);
+        }
+        return true;
+    }
+
+    add_history_line(console, "Usage: CONFIGSAVE [LIST | GET THEME | SET THEME <VALUE>]");
+    return true;
+}
+
 void submit_command(ConsoleState& console, DriveState* drives,
                     WorkingDirectory* working_directory,
                     const annyos::api::AnnyOsApiV1& api) {
@@ -888,6 +1134,10 @@ void submit_command(ConsoleState& console, DriveState* drives,
             add_history_line(console, "Usage: COLOR BLUE | GREEN | AMBER | MATRIX");
         } else if (command_starts_with(console.input, "color ")) {
             set_console_color(console, console.input + 6);
+        } else if (command_equals(console.input, "configsave")) {
+            handle_configsave_command(console, "");
+        } else if (command_starts_with(console.input, "configsave ")) {
+            handle_configsave_command(console, console.input + 11);
         } else if (command_equals(console.input, "dir")) {
             if (!fat32_mounted) {
                 add_history_line(console, "FAT32 volume not found.");
@@ -1038,12 +1288,7 @@ void redraw_prompt(const annyos::FramebufferInfo& fb, const ConsoleState& consol
 
 extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
     __asm__ volatile("cli" : : : "memory");
-    g_serial_ready = annyos::serial::initialize(0x3f8);
-    const bool timer_ready = annyos::timer::initialize(1000);
-    debug_write(g_serial_ready ? "AnnyOS: COM1 serial logging enabled\r\n"
-                               : "AnnyOS: COM1 serial port unavailable\r\n");
-    debug_write(timer_ready ? "AnnyOS: PIT timer initialized at 1000 Hz\r\n"
-                            : "AnnyOS: PIT timer initialization failed\r\n");
+    initialize_kernel_drivers();
     annyos::input::usb::ControllerInfo usb_controller{};
     const bool xhci_found = annyos::input::usb::probe_xhci(&usb_controller);
     if (xhci_found) {
@@ -1074,22 +1319,9 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
         for (;;) __asm__ volatile("hlt");
     }
 
-    annyos::input::initialize_ps2_keyboard();
-    for (uint8_t index = 0; index < kAtaDriveSlots; ++index) {
-        DriveState& drive = g_drives[index];
-        const uint8_t channel = index / 2;
-        const uint8_t device = index % 2;
-        const bool ata_ready = annyos::storage::ata_pio_initialize(
-            channel, device, &drive.ata, &drive.block);
-        drive.mounted = ata_ready && annyos::storage::fat32_mount(drive.block, &drive.volume);
-        if (drive.mounted) {
-            debug_write(index == 0 ? "AnnyOS: FAT32 drive C: mounted\r\n"
-                                   : index == 1 ? "AnnyOS: FAT32 drive D: mounted\r\n"
-                                   : index == 2 ? "AnnyOS: FAT32 drive E: mounted\r\n"
-                                                : "AnnyOS: FAT32 drive F: mounted\r\n");
-        }
-    }
-    if (!g_drives[0].mounted) debug_write("AnnyOS: no FAT32 boot disk found\r\n");
+    annyos::config::config_save_initialize(
+        &g_config_save, g_drives[0].mounted ? &g_drives[0].volume : nullptr);
+    apply_console_theme(annyos::config::config_save_active_theme(&g_config_save));
     WorkingDirectory& working_directory = g_working_directory;
     reset_working_directory(working_directory, g_drives[0].volume, 'C', 0);
     ConsoleState& console = g_console;
@@ -1101,15 +1333,20 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.3.0]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.0]");
         add_history_line(console, "Type HELP for commands.");
     }
     redraw_history(boot_info->framebuffer, console, working_directory);
     debug_write("AnnyOS: DOS-style command console ready\r\n");
+    const annyos::drivers::ServiceRecord* keyboard_record =
+        g_driver_registry.query(annyos::drivers::ServiceId::keyboard_input, 1);
+    const auto* keyboard = keyboard_record == nullptr ? nullptr :
+        static_cast<const annyos::drivers::service::KeyboardInputV1*>(
+            keyboard_record->interface_pointer);
 
     for (;;) {
         annyos::input::KeyEvent event{};
-        if (!annyos::input::poll_ps2_keyboard(&event)) {
+        if (keyboard == nullptr || !keyboard->poll(&event)) {
             __asm__ volatile("pause");
             continue;
         }

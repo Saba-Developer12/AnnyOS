@@ -1,6 +1,6 @@
 class Console {
     method welcome() {
-        print("AnnyOS Command Processor [Version 0.3.0]");
+        print("AnnyOS Command Processor [Version 0.4.0]");
         print("Type HELP for commands.");
     }
 

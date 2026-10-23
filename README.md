@@ -1,6 +1,6 @@
 # AnnyOS
 
-Current version: **0.3.0**
+Current version: **0.4.0**
 
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,
@@ -11,6 +11,9 @@ The project is an early development system; it is not yet a general-purpose OS.
 
 - x86_64 UEFI boot through `EFI/BOOT/BOOTX64.EFI` and a GOP framebuffer console.
 - DOS-style command processor with `DIR`, `CD`, `CLS`, `COLOR`, `ECHO`, `SLEEP`, and `BEEP`, plus 32-entry command history with arrow-key recall.
+- `COLOR` themes are stored as key/value settings in `ANNYOS.CFG` on the FAT32
+  boot volume and restored at startup. Disk-image rebuilds preserve that file;
+  `make clean` removes the image and its saved settings.
 - PS/2 keyboard, FAT32/ATA PIO storage, 1000 Hz PIT timer, COM1 serial logging,
   and PC speaker tone drivers.
 - Early xHCI controller discovery and HID boot-keyboard report decoding. USB

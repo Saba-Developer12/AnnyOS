@@ -36,5 +36,10 @@ bool fat32_find_file(const Fat32Volume& volume, uint32_t directory_cluster,
                      const char* short_name, Fat32DirectoryEntry* entry);
 bool fat32_read_file(const Fat32Volume& volume, const Fat32DirectoryEntry& entry,
                      uint8_t* output, uint32_t output_capacity, uint32_t* bytes_read);
+// Creates or replaces a short-name file with data occupying at most one FAT32
+// cluster. The operation writes a fresh cluster before publishing its directory
+// entry, so an interrupted update leaves the previous file contents intact.
+bool fat32_write_file(const Fat32Volume& volume, uint32_t directory_cluster,
+                      const char* short_name, const uint8_t* data, uint32_t size);
 
 } // namespace annyos::storage

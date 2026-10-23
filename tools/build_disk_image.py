@@ -5,6 +5,7 @@ import math
 import pathlib
 import struct
 import sys
+from typing import Optional
 
 SECTOR = 512
 PARTITION_LBA = 2048
@@ -41,6 +42,104 @@ def dir_entry(name: bytes, attr: int, cluster: int, size: int = 0) -> bytes:
     struct.pack_into("<H", entry, 26, cluster & 0xFFFF)
     struct.pack_into("<I", entry, 28, size)
     return bytes(entry)
+
+
+def existing_config(image_path: pathlib.Path) -> Optional[bytes]:
+    """Read the small persisted config file before rebuilding the disk image."""
+    if not image_path.is_file():
+        return None
+    try:
+        with image_path.open("rb") as image:
+            image.seek(0)
+            mbr = image.read(SECTOR)
+            if len(mbr) != SECTOR or mbr[510:512] != b"\x55\xaa":
+                return None
+            partition_lba = None
+            for index in range(4):
+                entry = mbr[446 + index * 16:462 + index * 16]
+                if entry[4] in (0x0B, 0x0C, 0xEF):
+                    partition_lba = struct.unpack_from("<I", entry, 8)[0]
+                    break
+            if partition_lba is None:
+                return None
+
+            image.seek(partition_lba * SECTOR)
+            boot = image.read(SECTOR)
+            if len(boot) != SECTOR or boot[510:512] != b"\x55\xaa":
+                return None
+            bytes_per_sector = struct.unpack_from("<H", boot, 11)[0]
+            sectors_per_cluster = boot[13]
+            reserved_sectors = struct.unpack_from("<H", boot, 14)[0]
+            fat_count = boot[16]
+            sectors_per_fat = struct.unpack_from("<I", boot, 36)[0]
+            root_cluster = struct.unpack_from("<I", boot, 44)[0] & 0x0FFFFFFF
+            if (bytes_per_sector != SECTOR or sectors_per_cluster == 0 or
+                    reserved_sectors == 0 or fat_count == 0 or sectors_per_fat == 0 or
+                    root_cluster < 2):
+                return None
+
+            fat_start = partition_lba + reserved_sectors
+            data_start = fat_start + fat_count * sectors_per_fat
+
+            def next_cluster(cluster: int) -> int:
+                byte_offset = cluster * 4
+                image.seek((fat_start * SECTOR) + byte_offset)
+                raw = image.read(4)
+                if len(raw) != 4:
+                    return 0x0FFFFFFF
+                return struct.unpack("<I", raw)[0] & 0x0FFFFFFF
+
+            config_cluster = 0
+            config_size = 0
+            cluster = root_cluster
+            for _ in range(1_000_000):
+                offset = (data_start + (cluster - 2) * sectors_per_cluster) * SECTOR
+                image.seek(offset)
+                directory = image.read(sectors_per_cluster * SECTOR)
+                if len(directory) != sectors_per_cluster * SECTOR:
+                    return None
+                for entry_offset in range(0, len(directory), 32):
+                    item = directory[entry_offset:entry_offset + 32]
+                    if item[0] == 0:
+                        return None
+                    if item[0] == 0xE5 or item[11] == 0x0F or item[11] & 0x08:
+                        continue
+                    if item[:11] == b"ANNYOS  CFG" and not item[11] & 0x10:
+                        config_cluster = (struct.unpack_from("<H", item, 20)[0] << 16) | struct.unpack_from("<H", item, 26)[0]
+                        config_size = struct.unpack_from("<I", item, 28)[0]
+                        break
+                if config_cluster:
+                    break
+                cluster = next_cluster(cluster)
+                if cluster >= 0x0FFFFFF8 or cluster < 2:
+                    return None
+
+            if config_cluster < 2 or config_size == 0 or config_size > 4096:
+                return None
+            remaining = config_size
+            output = bytearray()
+            cluster = config_cluster
+            for _ in range(1_000_000):
+                offset = (data_start + (cluster - 2) * sectors_per_cluster) * SECTOR
+                image.seek(offset)
+                chunk = image.read(sectors_per_cluster * SECTOR)
+                if len(chunk) != sectors_per_cluster * SECTOR:
+                    return None
+                amount = min(remaining, len(chunk))
+                output.extend(chunk[:amount])
+                remaining -= amount
+                if remaining == 0:
+                    return bytes(output)
+                cluster = next_cluster(cluster)
+                if cluster >= 0x0FFFFFF8 or cluster < 2:
+                    return None
+    except (OSError, struct.error, OverflowError):
+        return None
+    return None
+
+
+def file_contents(value) -> bytes:
+    return value if isinstance(value, bytes) else value.read_bytes()
 
 
 class Fat32Image:
@@ -131,7 +230,7 @@ class Fat32Image:
                 child_cluster = self.add_directory(cluster, child_name, value)
                 entries.append(dir_entry(encoded_name, 0x10, child_cluster))
             else:
-                content = value.read_bytes()
+                content = file_contents(value)
                 child_cluster = self.allocate(content)
                 entries.append(dir_entry(encoded_name, 0x20, child_cluster, len(content)))
         entries.append(bytes(32))
@@ -153,7 +252,7 @@ class Fat32Image:
                 cluster = self.add_directory(2, name, value)
                 entries.append(dir_entry(encoded_name, 0x10, cluster))
             else:
-                content = value.read_bytes()
+                content = file_contents(value)
                 cluster = self.allocate(content)
                 entries.append(dir_entry(encoded_name, 0x20, cluster, len(content)))
         entries.append(bytes(32))
@@ -191,6 +290,9 @@ def main() -> int:
     if not (esp / "EFI/BOOT/BOOTX64.EFI").is_file():
         raise SystemExit("ESP is missing EFI/BOOT/BOOTX64.EFI")
     root = directory_tree(esp)
+    saved_config = existing_config(output)
+    if saved_config is not None and "ANNYOS.CFG" not in root:
+        root["ANNYOS.CFG"] = saved_config
     output.parent.mkdir(parents=True, exist_ok=True)
     image = Fat32Image(output)
     image.finish(root)

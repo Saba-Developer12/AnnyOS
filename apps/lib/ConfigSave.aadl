@@ -1,0 +1,27 @@
+// AADL wrapper for the version 2 ConfigSave services. These calls compile to
+// bounded AP API instructions handled by the AnnyOS kernel.
+class ConfigSave {
+    method list() {
+        api(CONFIG_LIST);
+    }
+
+    method getTheme() {
+        api(CONFIG_GET_THEME);
+    }
+
+    method setBlue() {
+        api(CONFIG_SET_THEME_BLUE);
+    }
+
+    method setGreen() {
+        api(CONFIG_SET_THEME_GREEN);
+    }
+
+    method setAmber() {
+        api(CONFIG_SET_THEME_AMBER);
+    }
+
+    method setMatrix() {
+        api(CONFIG_SET_THEME_MATRIX);
+    }
+}

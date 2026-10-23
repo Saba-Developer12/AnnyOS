@@ -1,0 +1,4 @@
+import "lib/ConfigSave.aadl";
+
+let settings = new ConfigSave();
+settings.list();
