@@ -1,6 +1,6 @@
 # AnnyOS
 
-Current version: **0.4.4**
+Current version: **0.4.5**
 
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,

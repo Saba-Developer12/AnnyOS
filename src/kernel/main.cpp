@@ -665,8 +665,7 @@ void set_console_color(ConsoleState& console, const char* name) {
         : "Console theme applied and saved.", g_prompt_color);
 }
 
-[[noreturn]] void reboot_system(const annyos::BootInfo& boot_info) {
-    __asm__ volatile("cli" : : : "memory");
+void attempt_reboot(const annyos::BootInfo& boot_info) {
     // ResetSystem is a UEFI Runtime Service and remains valid after
     // ExitBootServices. A conforming implementation does not return.
     if (boot_info.reset_system != nullptr) {
@@ -691,11 +690,34 @@ void set_console_color(ConsoleState& console, const char* name) {
         __asm__ volatile("pause");
     }
 
-    // If the platform has none of the reset mechanisms above, deliberately
-    // triple-fault rather than leaving a nonresponsive shell running.
-    struct __attribute__((packed)) EmptyIdt { uint16_t limit; uint64_t base; } empty_idt{0, 0};
-    __asm__ volatile("lidt %0; int3" : : "m"(empty_idt) : "memory");
-    for (;;) __asm__ volatile("cli; hlt" : : : "memory");
+}
+
+[[noreturn]] void show_reboot_animation(const annyos::FramebufferInfo& framebuffer,
+                                        const annyos::BootInfo& boot_info) {
+    constexpr char kSpinner[] = {'/', '|', '\\', '_'};
+    constexpr char kMessage[] = " Rebooting";
+    char line[sizeof(kMessage) + 1];
+    __asm__ volatile("cli" : : : "memory");
+    for (;;) {
+        for (uint32_t frame = 0; frame < sizeof(kSpinner); ++frame) {
+            line[0] = kSpinner[frame];
+            uint32_t length = 1;
+            for (uint32_t index = 0; kMessage[index] != '\0'; ++index)
+                line[length++] = kMessage[index];
+            line[length] = '\0';
+
+            fill_rect(framebuffer, 0, 0, static_cast<int32_t>(framebuffer.width),
+                      static_cast<int32_t>(framebuffer.height), g_screen_color);
+            const int32_t text_width = measure_text(line);
+            const int32_t x = (static_cast<int32_t>(framebuffer.width) - text_width) / 2;
+            const int32_t y = (static_cast<int32_t>(framebuffer.height) - kLineHeight) / 2;
+            draw_text(framebuffer, x, y, line, g_prompt_color, true);
+            (void)annyos::timer::sleep_ms(120);
+        }
+        // Keep the spinner alive if firmware or chipset reset requests return.
+        // Normal UEFI ResetSystem and hardware reset paths do not return.
+        attempt_reboot(boot_info);
+    }
 }
 
 void add_memory_report(ConsoleState& console, const annyos::BootInfo& boot_info) {
@@ -907,7 +929,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.4");
+            add_history_line(*state.console, "AnnyOS Version 0.4.5");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -919,10 +941,8 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
             add_memory_report(*state.console, *state.boot_info);
             return true;
         case annyos::api::Service::reboot:
-            add_history_line(*state.console, "Restarting AnnyOS...", g_prompt_color);
-            redraw_history(*state.framebuffer, *state.console, *state.working_directory);
             debug_write("AnnyOS: reboot requested\r\n");
-            reboot_system(*state.boot_info);
+            show_reboot_animation(*state.framebuffer, *state.boot_info);
         case annyos::api::Service::sleep:
             if (!annyos::timer::sleep_ms(500)) {
                 add_history_line(*state.console, "PIT timer is unavailable.");
@@ -2337,7 +2357,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.4]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.5]");
         add_history_line(console, "Type HELP for commands.");
     }
     redraw_history(boot_info->framebuffer, console, working_directory);
