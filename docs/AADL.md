@@ -58,6 +58,42 @@ and `CONFIG_SET_THEME_MATRIX`. ConfigSave services require API v2; the compiler
 sets the AP header's minimum API version automatically. Import
 `lib/ConfigSave.aadl` to use the `ConfigSave` wrapper class.
 
+API v3 adds six service groups, exposed by `SystemKernelApi`,
+`FileSystemDriverApi`, `MemoryStorageApi`, `AudioSpeakerApi`,
+`GraphicsConsoleApi`, and `InputDeviceApi` in `apps/lib/`. Their service names
+are `SYS_VERSION`, `SYS_REBOOT`, `SYS_SHUTDOWN`, `SYS_UPTIME`, `SYS_CLEAR`,
+`SYS_GET_TICK`, `SYS_SET_ENV`, `SYS_GET_ENV`, `SYS_CPU_INFO`, `SYS_PANIC`;
+`FS_CREATE`, `FS_READ`, `FS_EDIT`, `FS_DELETE`, `FS_EXISTS`, `FS_LIST_DIR`,
+`FS_MKDIR`, `FS_RMDIR`, `FS_COPY`, `FS_MOVE`, `FS_MOUNT_APFS`, `FS_MOUNT_NTFS`;
+`MEM_ALLOC`, `MEM_FREE`, `MEM_TOTAL`, `MEM_FREE_SPACE`, `MEM_COPY`, `MEM_SET`,
+`DISK_INFO`, `DISK_FORMAT`; `BEEP`, `PLAY_TONE`, `AUDIO_STOP`, `SOUND_EFFECT`,
+`SPEAKER_INIT`, `AUDIO_VOLUME`; `UI_SET_TITLE`, `UI_SET_COLOR`, `UI_DRAW_PIXEL`,
+`UI_DRAW_RECT`, `UI_CLEAR_SCREEN`, `UI_PRINT_TEXT`, `UI_CURSOR_POS`,
+`UI_OPEN_EDITOR`, `UI_THEME_DARK`, `UI_THEME_LIGHT`; and `INP_READ_KEY`,
+`INP_CHECK_KEY`, `MOUSE_GET_POS`, `MOUSE_CHECK_CLICK`, `SERIAL_WRITE`,
+`SERIAL_READ`, `USB_SCAN`, `TIME_GET_RTC`. `SYS_VERSION`, `SYS_REBOOT`, and
+`BEEP` keep their API v1 service numbers. The other v3 calls require an AP
+header declaring API v3.
+
+Service operands come from the application's command line, split into at most
+eight quoted or unquoted values of up to 95 bytes each. For example,
+`APP.AP "CONFIG" "blue"` passes `CONFIG` as operand 0 and `blue` as operand 1
+to every API call in that app. File calls use FAT32 short names in the current
+directory. `FS_COPY` and `FS_MOVE` accept source and destination names and are
+bounded to 4 KiB; `FS_RMDIR` removes only empty directories. `MEM_ALLOC` uses a
+bounded 8 KiB kernel-owned arena and reports a handle, rather than exposing
+arbitrary physical memory. Environment entries last for the current boot.
+
+Hardware and storage calls are constrained by existing kernel support:
+APFS/NTFS mount requests report unavailable because those drivers do not yet
+mount volumes; disk formatting is deliberately disabled; mouse calls report
+unavailable because no mouse device is registered; USB scan detects xHCI but
+does not enumerate devices. PC speaker volume is mute/full only, and key/serial
+reads are non-blocking. `UI_CURSOR_POS` is unavailable in the text console.
+These handlers return status text instead of pretending those operations
+succeeded. All implemented calls are dispatched through the API v3 host table;
+older API v1/v2 application binaries keep using the original callback layout.
+
 ## AP v1 execution model and bounds
 
 AP v1 has no object heap, runtime variables, function-call opcode, or native
@@ -73,3 +109,11 @@ text bound, help-row field limits, API/argument ranges, 4096-instruction bound,
 and 64 KiB image bound. It writes the exact 40-byte little-endian AP header and
 FNV-1a checksum expected by `src/kernel/ap_loader.cpp`. FNV-1a detects
 accidental corruption; it does not authenticate a program.
+
+`apps/lib/SDL.aadl` is the AnnyOS SDL library facade. It groups the currently
+available console, system information, clock, storage-command help, saved
+theme settings, and audio services into reusable AADL classes. Compile
+`apps/SDLDEMO.aadl` for a small example. Storage methods expose the shell's
+documented file commands; direct file operations remain a kernel CLI feature.
+Each SDL method maps to an existing AnnyOS AP service or AADL library, so the
+module does not claim facilities that the current kernel API does not provide.

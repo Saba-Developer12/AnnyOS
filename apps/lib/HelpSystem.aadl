@@ -4,7 +4,7 @@ class HelpSystem {
     method show() {
         title("ANNYOS  |  COMMAND GUIDE");
         row("COMMAND", "DESCRIPTION");
-        row("DIR", "List the current directory");
+        row("DIR [PATH]", "List current directory or PATH");
         row("CD [DIR|..|\\]", "Change directory");
         row("C: THROUGH F:", "Switch to a mounted ATA drive");
         let files = new FileSystem();

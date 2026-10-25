@@ -1,0 +1,108 @@
+// AnnyOS SDL source library: small, reusable facades over the public AP API.
+import "Console.aadl";
+import "SysInfo.aadl";
+import "TimeManager.aadl";
+import "ConfigSave.aadl";
+import "FileSystem.aadl";
+import "AudioDevice.aadl";
+import "HelpSystem.aadl";
+
+class SDLConsole {
+    method welcome() {
+        let console = new Console();
+        console.welcome();
+    }
+
+    method help() {
+        let guide = new HelpSystem();
+        guide.show();
+    }
+}
+
+class SDLSystem {
+    method version() {
+        let info = new SysInfo();
+        info.version();
+    }
+
+    method memory() {
+        let info = new SysInfo();
+        info.memory();
+    }
+
+    method date() {
+        let clock = new TimeManager();
+        clock.date();
+    }
+
+    method time() {
+        let clock = new TimeManager();
+        clock.time();
+    }
+}
+
+class SDLStorage {
+    method showCommands() {
+        let files = new FileSystem();
+        files.showCommands();
+    }
+}
+
+class SDLSettings {
+    method list() {
+        let settings = new ConfigSave();
+        settings.list();
+    }
+
+    method showTheme() {
+        let settings = new ConfigSave();
+        settings.getTheme();
+    }
+
+    method setBlue() {
+        let settings = new ConfigSave();
+        settings.setBlue();
+    }
+
+    method setGreen() {
+        let settings = new ConfigSave();
+        settings.setGreen();
+    }
+
+    method setAmber() {
+        let settings = new ConfigSave();
+        settings.setAmber();
+    }
+
+    method setMatrix() {
+        let settings = new ConfigSave();
+        settings.setMatrix();
+    }
+}
+
+class SDLAudio {
+    method beep() {
+        let audio = new AudioDevice();
+        audio.beep();
+    }
+}
+
+class SDL {
+    method welcome() {
+        let console = new SDLConsole();
+        console.welcome();
+    }
+
+    method systemSummary() {
+        let system = new SDLSystem();
+        system.version();
+        system.date();
+        system.time();
+        system.memory();
+    }
+
+    method showTheme() {
+        let settings = new SDLSettings();
+        settings.showTheme();
+    }
+}

@@ -28,7 +28,8 @@ uint32_t checksum(const uint8_t* bytes, uint32_t length) {
 
 ApResult process_program(const uint8_t* code, uint32_t code_size,
                          const annyos::api::AnnyOsApiV1* api,
-                         const ApArguments* arguments, bool execute,
+                         const ApArguments* arguments, uint32_t declared_api_version,
+                         bool execute,
                          uint32_t* processed_instructions) {
     uint32_t offset = 0;
     uint32_t instruction_count = 0;
@@ -44,11 +45,21 @@ ApResult process_program(const uint8_t* code, uint32_t code_size,
             if (offset >= code_size) return ApResult::invalid_program;
             const uint8_t service = code[offset++];
             if (service < static_cast<uint8_t>(annyos::api::Service::version) ||
-                service > static_cast<uint8_t>(annyos::api::Service::config_set_theme_matrix)) {
+                service > static_cast<uint8_t>(annyos::api::Service::time_get_rtc)) {
                 return ApResult::invalid_program;
             }
-            if (execute && !api->invoke_service(api->context,
-                    static_cast<annyos::api::Service>(service))) return ApResult::output_failed;
+            const uint32_t service_api_version = service >=
+                static_cast<uint8_t>(annyos::api::Service::sys_shutdown) ? 3u :
+                (service >= static_cast<uint8_t>(annyos::api::Service::config_list) ? 2u : 1u);
+            if (declared_api_version < service_api_version) return ApResult::invalid_program;
+            if (execute) {
+                const auto identifier = static_cast<annyos::api::Service>(service);
+                const bool invoked = service >= static_cast<uint8_t>(annyos::api::Service::sys_shutdown)
+                    ? api->invoke_service_v3 != nullptr &&
+                      api->invoke_service_v3(api->context, identifier, arguments)
+                    : api->invoke_service(api->context, identifier);
+                if (!invoked) return ApResult::output_failed;
+            }
             continue;
         }
 
@@ -136,9 +147,8 @@ ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& hos
     if (image == nullptr || host.api == nullptr || image_size < kApHeaderBytes ||
         image_size > kApMaximumFileBytes) return ApResult::invalid_argument;
     const annyos::api::AnnyOsApiV1& api = *host.api;
-    if (api.structure_size < sizeof(api.structure_size) + sizeof(api.version) ||
-        api.version < annyos::api::kVersion ||
-        api.structure_size < sizeof(annyos::api::AnnyOsApiV1) ||
+    constexpr uint32_t kV2ApiSize = offsetof(annyos::api::AnnyOsApiV1, invoke_service_v3);
+    if (api.structure_size < kV2ApiSize || api.version < 1 ||
         api.console_write_line == nullptr ||
         api.console_write_title == nullptr ||
         api.console_write_help_row == nullptr || api.invoke_service == nullptr) {
@@ -157,7 +167,10 @@ ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& hos
         return ApResult::invalid_header;
     }
     const uint32_t required_api_version = read_u32(image + 36);
-    if (required_api_version == 0 || required_api_version > api.version) {
+    if (required_api_version == 0 || required_api_version > api.version ||
+        (required_api_version >= 3 &&
+         (api.structure_size < sizeof(annyos::api::AnnyOsApiV1) ||
+          api.invoke_service_v3 == nullptr))) {
         return ApResult::unsupported_version;
     }
 
@@ -170,9 +183,11 @@ ApResult execute_ap(const uint8_t* image, uint32_t image_size, const ApHost& hos
     if (arguments != nullptr && arguments->count > kApMaximumArguments) {
         return ApResult::invalid_argument;
     }
-    const ApResult validation = process_program(code, code_size, &api, arguments, false, nullptr);
+    const ApResult validation = process_program(code, code_size, &api, arguments,
+                                                required_api_version, false, nullptr);
     if (validation != ApResult::success) return validation;
-    return process_program(code, code_size, &api, arguments, true, executed_instructions);
+    return process_program(code, code_size, &api, arguments, required_api_version,
+                           true, executed_instructions);
 }
 
 } // namespace annyos::application

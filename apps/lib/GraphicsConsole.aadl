@@ -1,0 +1,12 @@
+class GraphicsConsoleApi {
+    method setTitle() { api(UI_SET_TITLE); }
+    method setColor() { api(UI_SET_COLOR); }
+    method drawPixel() { api(UI_DRAW_PIXEL); }
+    method drawRectangle() { api(UI_DRAW_RECT); }
+    method clearScreen() { api(UI_CLEAR_SCREEN); }
+    method printText() { api(UI_PRINT_TEXT); }
+    method cursorPosition() { api(UI_CURSOR_POS); }
+    method openEditor() { api(UI_OPEN_EDITOR); }
+    method darkTheme() { api(UI_THEME_DARK); }
+    method lightTheme() { api(UI_THEME_LIGHT); }
+}

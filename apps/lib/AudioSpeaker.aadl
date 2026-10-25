@@ -1,0 +1,8 @@
+class AudioSpeakerApi {
+    method beep() { api(BEEP); }
+    method playTone() { api(PLAY_TONE); }
+    method stop() { api(AUDIO_STOP); }
+    method soundEffect() { api(SOUND_EFFECT); }
+    method initialize() { api(SPEAKER_INIT); }
+    method setVolume() { api(AUDIO_VOLUME); }
+}

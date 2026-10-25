@@ -9,6 +9,7 @@ constexpr uint8_t kLineControl = 3;
 constexpr uint8_t kModemControl = 4;
 constexpr uint8_t kLineStatus = 5;
 constexpr uint8_t kTransmitReady = 0x20;
+constexpr uint8_t kReceiveReady = 0x01;
 constexpr uint32_t kPollLimit = 1000000;
 
 uint16_t g_base_port = 0x3f8;
@@ -58,6 +59,14 @@ bool write(const char* text) {
     while (*text != '\0') {
         if (!write_byte(static_cast<uint8_t>(*text++))) return false;
     }
+    return true;
+}
+
+bool read_byte(uint8_t* byte) {
+    if (!g_initialized || byte == nullptr) return false;
+    const uint8_t status = in8(g_base_port + kLineStatus);
+    if (status == 0xff || (status & kReceiveReady) == 0) return false;
+    *byte = in8(g_base_port + kData);
     return true;
 }
 

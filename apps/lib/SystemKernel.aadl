@@ -1,0 +1,12 @@
+class SystemKernelApi {
+    method version() { api(SYS_VERSION); }
+    method reboot() { api(SYS_REBOOT); }
+    method shutdown() { api(SYS_SHUTDOWN); }
+    method uptime() { api(SYS_UPTIME); }
+    method clear() { api(SYS_CLEAR); }
+    method tick() { api(SYS_GET_TICK); }
+    method setEnvironment() { api(SYS_SET_ENV); }
+    method getEnvironment() { api(SYS_GET_ENV); }
+    method cpuInfo() { api(SYS_CPU_INFO); }
+    method panic() { api(SYS_PANIC); }
+}

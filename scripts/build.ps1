@@ -77,6 +77,8 @@ $fat32ModuleArgs = @(
     '/export:annyos_fat32_list_directory',
     '/export:annyos_fat32_find_file', '/export:annyos_fat32_read_file',
     '/export:annyos_fat32_write_file', '/export:annyos_fat32_delete_file',
+    '/export:annyos_fat32_make_directory', '/export:annyos_fat32_remove_directory',
+    '/export:annyos_fat32_copy_file', '/export:annyos_fat32_move_file',
     "/out:$(Join-Path $buildDir 'fat32.sys')",
     (Join-Path $objectDir 'fat32.obj'), (Join-Path $objectDir 'fat32_module.obj')
 )
@@ -138,6 +140,7 @@ if ($LASTEXITCODE -ne 0) { throw 'PIT timer module link failed.' }
 $serialModuleArgs = @(
     '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
     '/export:annyos_serial_initialize', '/export:annyos_serial_write_byte', '/export:annyos_serial_write',
+    '/export:annyos_serial_read_byte',
     "/out:$(Join-Path $buildDir 'serial.sys')",
     (Join-Path $objectDir 'serial_com1.obj'), (Join-Path $objectDir 'serial_module.obj')
 )

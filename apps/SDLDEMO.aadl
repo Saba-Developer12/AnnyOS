@@ -1,0 +1,7 @@
+import "lib/SDL.aadl";
+
+title("ANNYOS SDL LIBRARY");
+let sdl = new SDL();
+sdl.welcome();
+sdl.systemSummary();
+sdl.showTheme();

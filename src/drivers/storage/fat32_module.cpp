@@ -44,3 +44,27 @@ extern "C" bool annyos_fat32_delete_file(const annyos::storage::Fat32Volume* vol
     return volume != nullptr &&
            annyos::storage::fat32_delete_file(*volume, directory_cluster, short_name);
 }
+
+extern "C" bool annyos_fat32_make_directory(const annyos::storage::Fat32Volume* volume,
+                                             uint32_t parent_cluster, const char* short_name) {
+    return volume != nullptr && annyos::storage::fat32_make_directory(*volume, parent_cluster, short_name);
+}
+
+extern "C" bool annyos_fat32_remove_directory(const annyos::storage::Fat32Volume* volume,
+                                               uint32_t parent_cluster, const char* short_name) {
+    return volume != nullptr && annyos::storage::fat32_remove_directory(*volume, parent_cluster, short_name);
+}
+
+extern "C" bool annyos_fat32_copy_file(const annyos::storage::Fat32Volume* volume,
+                                        uint32_t directory_cluster, const char* source_name,
+                                        const char* destination_name) {
+    return volume != nullptr && annyos::storage::fat32_copy_file(
+        *volume, directory_cluster, source_name, destination_name);
+}
+
+extern "C" bool annyos_fat32_move_file(const annyos::storage::Fat32Volume* volume,
+                                        uint32_t directory_cluster, const char* source_name,
+                                        const char* destination_name) {
+    return volume != nullptr && annyos::storage::fat32_move_file(
+        *volume, directory_cluster, source_name, destination_name);
+}

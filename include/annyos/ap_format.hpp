@@ -11,13 +11,10 @@ constexpr uint32_t kApHeaderBytes = 40;
 constexpr uint32_t kApMaximumFileBytes = 64 * 1024;
 constexpr uint32_t kApMaximumInstructions = 4096;
 constexpr uint32_t kApMaximumPrintBytes = 95;
-constexpr uint32_t kApMaximumArguments = 8;
-constexpr uint32_t kApMaximumArgumentBytes = 95;
+constexpr uint32_t kApMaximumArguments = annyos::api::kMaximumServiceArguments;
+constexpr uint32_t kApMaximumArgumentBytes = annyos::api::kMaximumServiceArgumentBytes;
 
-struct ApArguments {
-    uint8_t count;
-    char values[kApMaximumArguments][kApMaximumArgumentBytes + 1];
-};
+using ApArguments = annyos::api::ServiceArguments;
 
 // Describes the on-disk fields. Parse untrusted bytes with explicit
 // little-endian reads; do not reinterpret an arbitrary byte buffer as ApHeader.

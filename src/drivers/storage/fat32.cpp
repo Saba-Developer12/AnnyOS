@@ -166,7 +166,8 @@ bool encode_short_name(const char* name, uint8_t output[11]) {
 }
 
 bool locate_directory_slot(const Fat32Volume& volume, uint32_t directory_cluster,
-                           const uint8_t name[11], DirectorySlot* slot) {
+                           const uint8_t name[11], DirectorySlot* slot,
+                           bool include_directories = false) {
     if (slot == nullptr || volume.device.read_sector == nullptr ||
         volume.device.write_sector == nullptr || volume.sectors_per_cluster == 0 ||
         directory_cluster < 2 || directory_cluster >= volume.cluster_count + 2) return false;
@@ -216,7 +217,7 @@ bool locate_directory_slot(const Fat32Volume& volume, uint32_t directory_cluster
                     }
                 }
                 if (matches) {
-                    if ((item[11] & 0x10) != 0) return false;
+                    if ((item[11] & 0x10) != 0 && !include_directories) return false;
                     slot->lba = lba;
                     slot->offset = static_cast<uint16_t>(offset);
                     slot->old_first_cluster =
@@ -608,6 +609,152 @@ bool fat32_delete_file(const Fat32Volume& volume, uint32_t directory_cluster,
     entry[0] = 0xe5;
     if (!volume.device.write_sector(volume.device.context, slot.lba, sector)) return false;
     return release_cluster_chain(volume, slot.old_first_cluster);
+}
+
+bool fat32_make_directory(const Fat32Volume& volume, uint32_t parent_cluster,
+                          const char* short_name) {
+    if (volume.device.read_sector == nullptr || volume.device.write_sector == nullptr ||
+        volume.device.sector_size != kSectorBytes) return false;
+    uint8_t name[11];
+    if (!encode_short_name(short_name, name)) return false;
+    DirectorySlot slot{};
+    if (!locate_directory_slot(volume, parent_cluster, name, &slot) || slot.existed) return false;
+
+    uint32_t new_cluster = 0;
+    if (!find_free_cluster(volume, &new_cluster) ||
+        !write_fat_entry(volume, new_cluster, kFatEndOfChain) ||
+        !clear_cluster_data(volume, new_cluster)) {
+        if (new_cluster != 0) (void)write_fat_entry(volume, new_cluster, 0);
+        return false;
+    }
+    uint32_t data_lba = 0;
+    uint8_t data[kSectorBytes];
+    for (uint32_t index = 0; index < kSectorBytes; ++index) data[index] = 0;
+    if (!cluster_lba(volume, new_cluster, 0, &data_lba)) {
+        (void)write_fat_entry(volume, new_cluster, 0);
+        return false;
+    }
+    const auto write_dot_entry = [](uint8_t* entry, bool parent, uint32_t cluster) {
+        for (uint32_t index = 0; index < 11; ++index) entry[index] = ' ';
+        entry[0] = '.';
+        if (parent) entry[1] = '.';
+        entry[11] = 0x10;
+        for (uint32_t index = 12; index < 20; ++index) entry[index] = 0;
+        entry[20] = static_cast<uint8_t>(cluster >> 16);
+        entry[21] = static_cast<uint8_t>(cluster >> 24);
+        entry[26] = static_cast<uint8_t>(cluster);
+        entry[27] = static_cast<uint8_t>(cluster >> 8);
+        for (uint32_t index = 22; index < 26; ++index) entry[index] = 0;
+        for (uint32_t index = 28; index < 32; ++index) entry[index] = 0;
+    };
+    write_dot_entry(data, false, new_cluster);
+    write_dot_entry(data + 32, true, parent_cluster);
+    if (!volume.device.write_sector(volume.device.context, data_lba, data)) {
+        (void)write_fat_entry(volume, new_cluster, 0);
+        return false;
+    }
+
+    uint8_t parent_sector[kSectorBytes];
+    if (!volume.device.read_sector(volume.device.context, slot.lba, parent_sector)) {
+        (void)write_fat_entry(volume, new_cluster, 0);
+        return false;
+    }
+    uint8_t* entry = parent_sector + slot.offset;
+    for (uint32_t index = 0; index < 11; ++index) entry[index] = name[index];
+    entry[11] = 0x10;
+    for (uint32_t index = 12; index < 20; ++index) entry[index] = 0;
+    entry[20] = static_cast<uint8_t>(new_cluster >> 16);
+    entry[21] = static_cast<uint8_t>(new_cluster >> 24);
+    entry[22] = entry[23] = entry[24] = entry[25] = 0;
+    entry[26] = static_cast<uint8_t>(new_cluster);
+    entry[27] = static_cast<uint8_t>(new_cluster >> 8);
+    entry[28] = entry[29] = entry[30] = entry[31] = 0;
+    if (!volume.device.write_sector(volume.device.context, slot.lba, parent_sector)) {
+        (void)write_fat_entry(volume, new_cluster, 0);
+        return false;
+    }
+    return true;
+}
+
+namespace {
+struct DirectoryContentsState { bool has_user_entry; };
+
+bool directory_contents_callback(void* context, const Fat32DirectoryEntry& entry) {
+    if (entry.name[0] == '.' && (entry.name[1] == '\0' ||
+        (entry.name[1] == '.' && entry.name[2] == '\0'))) return true;
+    static_cast<DirectoryContentsState*>(context)->has_user_entry = true;
+    return false;
+}
+}
+
+bool fat32_remove_directory(const Fat32Volume& volume, uint32_t parent_cluster,
+                            const char* short_name) {
+    if (volume.device.read_sector == nullptr || volume.device.write_sector == nullptr ||
+        volume.device.sector_size != kSectorBytes) return false;
+    uint8_t name[11];
+    if (!encode_short_name(short_name, name)) return false;
+    DirectorySlot slot{};
+    if (!locate_directory_slot(volume, parent_cluster, name, &slot, true) || !slot.existed ||
+        (slot.attributes & 0x10u) == 0 || slot.old_first_cluster < 2) return false;
+    DirectoryContentsState contents{false};
+    if (!fat32_list_directory(volume, slot.old_first_cluster, directory_contents_callback, &contents) ||
+        contents.has_user_entry) return false;
+
+    uint8_t sector[kSectorBytes];
+    if (!volume.device.read_sector(volume.device.context, slot.lba, sector)) return false;
+    uint8_t* entry = sector + slot.offset;
+    if (entry[0] == 0 || entry[0] == 0xe5 || (entry[11] & 0x10u) == 0) return false;
+    entry[0] = 0xe5;
+    if (!volume.device.write_sector(volume.device.context, slot.lba, sector)) return false;
+    return release_cluster_chain(volume, slot.old_first_cluster);
+}
+
+namespace {
+uint8_t g_copy_buffer[4096];
+}
+
+bool fat32_copy_file(const Fat32Volume& volume, uint32_t directory_cluster,
+                     const char* source_name, const char* destination_name) {
+    Fat32DirectoryEntry source{};
+    if (!fat32_find_file(volume, directory_cluster, source_name, &source) ||
+        source.size > sizeof(g_copy_buffer)) return false;
+    uint32_t bytes_read = 0;
+    if (!fat32_read_file(volume, source, g_copy_buffer, sizeof(g_copy_buffer), &bytes_read) ||
+        bytes_read != source.size) return false;
+    Fat32DirectoryEntry existing{};
+    if (fat32_find_file(volume, directory_cluster, destination_name, &existing)) return false;
+    return fat32_write_file(volume, directory_cluster, destination_name,
+                            source.size == 0 ? nullptr : g_copy_buffer, source.size);
+}
+
+bool fat32_move_file(const Fat32Volume& volume, uint32_t directory_cluster,
+                     const char* source_name, const char* destination_name) {
+    if (!fat32_copy_file(volume, directory_cluster, source_name, destination_name)) return false;
+    if (fat32_delete_file(volume, directory_cluster, source_name)) return true;
+    // Preserve source contents; remove the duplicate created by the attempted move.
+    (void)fat32_delete_file(volume, directory_cluster, destination_name);
+    return false;
+}
+
+bool fat32_count_free_clusters(const Fat32Volume& volume, uint32_t* free_clusters) {
+    if (free_clusters == nullptr || volume.device.read_sector == nullptr ||
+        volume.sectors_per_fat == 0 || volume.cluster_count == 0) return false;
+    *free_clusters = 0;
+    uint8_t sector[kSectorBytes];
+    uint32_t cached_fat_sector = 0xffffffffu;
+    for (uint32_t cluster = 2; cluster < volume.cluster_count + 2; ++cluster) {
+        const uint32_t offset = cluster * 4;
+        const uint32_t fat_sector = offset / kSectorBytes;
+        if (fat_sector >= volume.sectors_per_fat) return false;
+        if (fat_sector != cached_fat_sector) {
+            const uint64_t lba = volume.volume_start_lba + volume.fat_start_lba + fat_sector;
+            if (lba >= volume.device.sector_count ||
+                !volume.device.read_sector(volume.device.context, lba, sector)) return false;
+            cached_fat_sector = fat_sector;
+        }
+        if ((read_u32(sector + (offset % kSectorBytes)) & 0x0fffffffu) == 0) ++*free_clusters;
+    }
+    return true;
 }
 
 } // namespace annyos::storage

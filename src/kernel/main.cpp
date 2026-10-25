@@ -37,6 +37,9 @@ constexpr uint32_t kWorkingDirectoryPathCapacity = 80;
 constexpr uint32_t kAtaDriveSlots = 4;
 constexpr uint32_t kFileBufferCapacity = 4096;
 constexpr uint32_t kApBufferCapacity = annyos::application::kApMaximumFileBytes;
+constexpr uint32_t kApiMemoryBytes = 8192;
+constexpr uint32_t kApiMemoryBlocks = 16;
+constexpr uint32_t kEnvironmentSlots = 16;
 
 struct ConsoleState {
     char history[kHistoryCapacity][kLineCapacity];
@@ -74,6 +77,18 @@ struct DriveState {
     bool mounted;
 };
 
+struct ApiMemoryBlock {
+    uint32_t offset;
+    uint32_t size;
+    bool used;
+};
+
+struct EnvironmentEntry {
+    char key[16];
+    char value[64];
+    bool used;
+};
+
 struct KernelApiContext {
     ConsoleState* console;
     const annyos::BootInfo* boot_info;
@@ -94,6 +109,10 @@ Color g_help_title_color = kDefaultHelpTitleColor;
 bool g_monochrome_theme = false;
 bool g_serial_ready = false;
 annyos::drivers::DriverRegistry g_driver_registry{};
+uint8_t g_api_memory[kApiMemoryBytes]{};
+ApiMemoryBlock g_api_memory_blocks[kApiMemoryBlocks]{};
+EnvironmentEntry g_environment[kEnvironmentSlots]{};
+uint8_t g_audio_volume = 100;
 
 bool driver_get_fat32_volume(void* context, uint8_t drive_index,
                              const annyos::storage::Fat32Volume** volume);
@@ -437,7 +456,7 @@ void add_builtin_help(ConsoleState& console) {
     add_history_line(console, "ANNYOS  |  COMMAND GUIDE", g_help_title_color, true);
     add_history_line(console, "----------------------------------------------------------------");
     add_help_row(console, "COMMAND", "DESCRIPTION");
-    add_help_row(console, "DIR", "List the current directory");
+    add_help_row(console, "DIR [PATH]", "List current directory or PATH");
     add_help_row(console, "CD [DIR|..|\\]", "Change directory");
     add_help_row(console, "C: THROUGH F:", "Switch to a mounted ATA drive");
     add_help_row(console, "CREATE <FILE>", "Create empty file or use CREATE <FILE> TEXT");
@@ -844,6 +863,12 @@ bool change_directory(WorkingDirectory* directory, const annyos::storage::Fat32V
 
 void redraw_history(const annyos::FramebufferInfo& fb, const ConsoleState& console,
                     const WorkingDirectory& working_directory);
+void list_directory(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
+                    const WorkingDirectory& current_directory, const char* requested_path);
+void begin_file_edit(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
+                     uint32_t directory_cluster, const char* filename);
+bool is_text_file(const uint8_t* data, uint32_t length);
+void display_file_contents(ConsoleState& console, const uint8_t* data, uint32_t length);
 
 bool api_write_line(void* context, const char* text, uint8_t length) {
     auto& state = *static_cast<KernelApiContext*>(context);
@@ -882,7 +907,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.3");
+            add_history_line(*state.console, "AnnyOS Version 0.4.4");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -940,13 +965,498 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
         case annyos::api::Service::config_set_theme_matrix:
             set_console_color(*state.console, "MATRIX");
             return true;
+        default:
+            return false;
     }
-    return false;
+}
+
+bool parse_decimal(const char* text, uint32_t* value) {
+    if (text == nullptr || value == nullptr || *text == '\0') return false;
+    uint32_t parsed = 0;
+    while (*text != '\0') {
+        if (*text < '0' || *text > '9') return false;
+        const uint32_t digit = static_cast<uint32_t>(*text++ - '0');
+        if (parsed > (0xffffffffu - digit) / 10u) return false;
+        parsed = parsed * 10u + digit;
+    }
+    *value = parsed;
+    return true;
+}
+
+const char* api_argument(const annyos::api::ServiceArguments* arguments, uint32_t index) {
+    return arguments != nullptr && index < arguments->count ? arguments->values[index] : "";
+}
+
+void add_api_decimal(ConsoleState& console, const char* label, uint64_t value) {
+    char line[80] = "";
+    uint32_t length = append_text(line, 0, sizeof(line), label);
+    append_decimal(line, &length, value);
+    add_history_line(console, line, g_prompt_color);
+}
+
+bool api_environment_set(ConsoleState& console,
+                         const annyos::api::ServiceArguments* arguments) {
+    const char* key = api_argument(arguments, 0);
+    const char* value = api_argument(arguments, 1);
+    const uint32_t key_length = bounded_string_length(key, sizeof(g_environment[0].key));
+    const uint32_t value_length = bounded_string_length(value, sizeof(g_environment[0].value));
+    if (key_length == 0 || key_length >= sizeof(g_environment[0].key) ||
+        value_length >= sizeof(g_environment[0].value)) {
+        add_history_line(console, "SYS_SET_ENV requires KEY and VALUE (15/63 byte limits).");
+        return true;
+    }
+    for (uint32_t index = 0; index < key_length; ++index) {
+        const char c = key[index];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_')) {
+            add_history_line(console, "Environment keys use letters, digits, and underscore.");
+            return true;
+        }
+    }
+    uint32_t slot = kEnvironmentSlots;
+    for (uint32_t index = 0; index < kEnvironmentSlots; ++index) {
+        if (g_environment[index].used && equal_ignore_case(g_environment[index].key, key)) {
+            slot = index;
+            break;
+        }
+        if (!g_environment[index].used && slot == kEnvironmentSlots) slot = index;
+    }
+    if (slot == kEnvironmentSlots) {
+        add_history_line(console, "Environment table is full.");
+        return true;
+    }
+    append_text(g_environment[slot].key, 0, sizeof(g_environment[slot].key), key);
+    append_text(g_environment[slot].value, 0, sizeof(g_environment[slot].value), value);
+    g_environment[slot].used = true;
+    add_history_line(console, "Environment value stored for this session.", g_prompt_color);
+    return true;
+}
+
+bool api_memory_allocate(ConsoleState& console,
+                         const annyos::api::ServiceArguments* arguments) {
+    uint32_t requested = 0;
+    if (!parse_decimal(api_argument(arguments, 0), &requested) || requested == 0 ||
+        requested > kApiMemoryBytes) {
+        add_history_line(console, "MEM_ALLOC requires a size from 1 to 8192 bytes.");
+        return true;
+    }
+    uint32_t slot = kApiMemoryBlocks;
+    for (uint32_t index = 0; index < kApiMemoryBlocks; ++index) {
+        if (!g_api_memory_blocks[index].used) { slot = index; break; }
+    }
+    if (slot == kApiMemoryBlocks) {
+        add_history_line(console, "AP memory handle table is full.");
+        return true;
+    }
+
+    for (uint32_t candidate = 0; candidate <= kApiMemoryBytes - requested; candidate += 8) {
+        bool overlaps = false;
+        uint32_t next_candidate = candidate + 8;
+        for (uint32_t index = 0; index < kApiMemoryBlocks; ++index) {
+            const ApiMemoryBlock& block = g_api_memory_blocks[index];
+            if (!block.used) continue;
+            const uint32_t candidate_end = candidate + requested;
+            const uint32_t block_end = block.offset + block.size;
+            if (candidate < block_end && block.offset < candidate_end) {
+                overlaps = true;
+                const uint32_t aligned_end = (block_end + 7u) & ~7u;
+                if (aligned_end > next_candidate) next_candidate = aligned_end;
+            }
+        }
+        if (overlaps) {
+            candidate = next_candidate >= 8 ? next_candidate - 8 : candidate;
+            continue;
+        }
+        g_api_memory_blocks[slot] = {candidate, requested, true};
+        add_api_decimal(console, "AP memory handle: ", slot + 1);
+        return true;
+    }
+    add_history_line(console, "AP memory arena is full.");
+    return true;
+}
+
+bool api_invoke_service_v3(void* context, annyos::api::Service service,
+                          const annyos::api::ServiceArguments* arguments) {
+    auto& state = *static_cast<KernelApiContext*>(context);
+    ConsoleState& console = *state.console;
+    const char* first = api_argument(arguments, 0);
+    const char* second = api_argument(arguments, 1);
+    const char* third = api_argument(arguments, 2);
+    switch (service) {
+        case annyos::api::Service::sys_shutdown:
+            add_history_line(console, "Shutting down AnnyOS...", g_prompt_color);
+            redraw_history(*state.framebuffer, console, *state.working_directory);
+            debug_write("AnnyOS: shutdown requested\r\n");
+            if (state.boot_info->reset_system != nullptr) {
+                state.boot_info->reset_system(2, 0, 0, nullptr);
+            }
+            for (;;) __asm__ volatile("cli; hlt" : : : "memory");
+        case annyos::api::Service::sys_uptime:
+            add_api_decimal(console, "Uptime: ", annyos::timer::ticks() / 1000);
+            return true;
+        case annyos::api::Service::sys_clear:
+        case annyos::api::Service::ui_clear_screen:
+            clear_history(console);
+            redraw_history(*state.framebuffer, console, *state.working_directory);
+            return true;
+        case annyos::api::Service::sys_get_tick:
+            add_api_decimal(console, "PIT ticks: ", annyos::timer::ticks());
+            return true;
+        case annyos::api::Service::sys_set_env:
+            return api_environment_set(console, arguments);
+        case annyos::api::Service::sys_get_env: {
+            for (uint32_t index = 0; index < kEnvironmentSlots; ++index) {
+                if (g_environment[index].used && equal_ignore_case(g_environment[index].key, first)) {
+                    char line[96] = "";
+                    uint32_t length = append_text(line, 0, sizeof(line), g_environment[index].key);
+                    if (length + 1 < sizeof(line)) line[length++] = '=';
+                    append_text(line, length, sizeof(line), g_environment[index].value);
+                    add_history_line(console, line);
+                    return true;
+                }
+            }
+            add_history_line(console, "Environment key not found.");
+            return true;
+        }
+        case annyos::api::Service::sys_cpu_info: {
+            uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+            __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+            char vendor[32] = "CPU vendor: ";
+            uint32_t length = 12;
+            const uint32_t words[3] = {ebx, edx, ecx};
+            for (uint32_t word = 0; word < 3; ++word) {
+                for (uint32_t byte = 0; byte < 4; ++byte)
+                    vendor[length++] = static_cast<char>(words[word] >> (byte * 8));
+            }
+            vendor[length] = '\0';
+            add_history_line(console, vendor);
+            return true;
+        }
+        case annyos::api::Service::sys_panic:
+            debug_write("AnnyOS: AP requested kernel panic: ");
+            debug_write(first);
+            debug_write("\r\n");
+            add_history_line(console, "Kernel panic requested by application.", g_help_title_color, true);
+            redraw_history(*state.framebuffer, console, *state.working_directory);
+            for (;;) __asm__ volatile("cli; hlt" : : : "memory");
+        case annyos::api::Service::fs_create: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            if (!drive.mounted) { add_history_line(console, "FAT32 volume not found."); return true; }
+            const uint32_t size = bounded_string_length(second, annyos::api::kMaximumServiceArgumentBytes);
+            const auto* bytes = size == 0 ? nullptr : reinterpret_cast<const uint8_t*>(second);
+            const uint32_t directory = state.working_directory->cluster_stack[state.working_directory->depth];
+            add_history_line(console, annyos::storage::fat32_write_file(
+                drive.volume, directory, first, bytes, size) ? "File created." : "FS_CREATE failed.");
+            return true;
+        }
+        case annyos::api::Service::fs_read: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            annyos::storage::Fat32DirectoryEntry entry{};
+            uint32_t bytes_read = 0;
+            const uint32_t directory = state.working_directory->cluster_stack[state.working_directory->depth];
+            if (!drive.mounted || !annyos::storage::fat32_find_file(drive.volume, directory, first, &entry) ||
+                entry.size > kFileBufferCapacity || !annyos::storage::fat32_read_file(
+                    drive.volume, entry, console.editor_buffer, kFileBufferCapacity, &bytes_read)) {
+                add_history_line(console, "FS_READ failed or file exceeds 4 KiB.");
+            } else if (!is_text_file(console.editor_buffer, bytes_read)) {
+                add_history_line(console, "FS_READ: binary file; text output is unavailable.");
+            } else {
+                display_file_contents(console, console.editor_buffer, bytes_read);
+            }
+            return true;
+        }
+        case annyos::api::Service::fs_edit: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            if (!drive.mounted) add_history_line(console, "FAT32 volume not found.");
+            else begin_file_edit(console, drive.volume,
+                state.working_directory->cluster_stack[state.working_directory->depth], first);
+            return true;
+        }
+        case annyos::api::Service::fs_delete: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            const uint32_t directory = state.working_directory->cluster_stack[state.working_directory->depth];
+            add_history_line(console, drive.mounted && annyos::storage::fat32_delete_file(
+                drive.volume, directory, first) ? "File deleted." : "FS_DELETE failed.");
+            return true;
+        }
+        case annyos::api::Service::fs_exists: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            const uint32_t directory = state.working_directory->cluster_stack[state.working_directory->depth];
+            annyos::storage::Fat32DirectoryEntry entry{};
+            if (drive.mounted && annyos::storage::fat32_find_file(drive.volume, directory, first, &entry))
+                add_history_line(console, "File exists.");
+            else {
+                uint32_t cluster = 0;
+                add_history_line(console, drive.mounted && find_child_directory(
+                    drive.volume, directory, first, &cluster) ? "Directory exists." : "Path not found.");
+            }
+            return true;
+        }
+        case annyos::api::Service::fs_list_dir: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            if (!drive.mounted) add_history_line(console, "FAT32 volume not found.");
+            else list_directory(console, drive.volume, *state.working_directory, first);
+            return true;
+        }
+        case annyos::api::Service::mem_alloc:
+            return api_memory_allocate(console, arguments);
+        case annyos::api::Service::mem_free: {
+            uint32_t handle = 0;
+            if (!parse_decimal(first, &handle) || handle == 0 || handle > kApiMemoryBlocks ||
+                !g_api_memory_blocks[handle - 1].used) {
+                add_history_line(console, "MEM_FREE requires a live allocation handle.");
+            } else {
+                g_api_memory_blocks[handle - 1].used = false;
+                add_history_line(console, "AP memory block released.", g_prompt_color);
+            }
+            return true;
+        }
+        case annyos::api::Service::mem_total:
+            add_memory_report(console, *state.boot_info);
+            return true;
+        case annyos::api::Service::mem_free_space: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            uint32_t free_clusters = 0;
+            if (!drive.mounted || !annyos::storage::fat32_count_free_clusters(drive.volume, &free_clusters)) {
+                add_history_line(console, "Could not query FAT32 free space.");
+            } else {
+                const uint64_t bytes = static_cast<uint64_t>(free_clusters) *
+                    drive.volume.sectors_per_cluster * drive.volume.device.sector_size;
+                add_api_decimal(console, "FAT32 free bytes: ", bytes);
+            }
+            return true;
+        }
+        case annyos::api::Service::mem_set: {
+            uint32_t handle = 0;
+            const uint32_t size = bounded_string_length(second, sizeof(g_api_memory));
+            if (!parse_decimal(first, &handle) || handle == 0 || handle > kApiMemoryBlocks ||
+                !g_api_memory_blocks[handle - 1].used || size > g_api_memory_blocks[handle - 1].size) {
+                add_history_line(console, "MEM_SET requires HANDLE and text that fits the block.");
+            } else {
+                ApiMemoryBlock& block = g_api_memory_blocks[handle - 1];
+                for (uint32_t index = 0; index < size; ++index)
+                    g_api_memory[block.offset + index] = static_cast<uint8_t>(second[index]);
+                add_history_line(console, "AP memory block updated.", g_prompt_color);
+            }
+            return true;
+        }
+        case annyos::api::Service::mem_copy: {
+            uint32_t source = 0, destination = 0, amount = 0;
+            if (!parse_decimal(first, &source) || !parse_decimal(second, &destination) ||
+                !parse_decimal(third, &amount) || source == 0 || destination == 0 ||
+                source > kApiMemoryBlocks || destination > kApiMemoryBlocks ||
+                !g_api_memory_blocks[source - 1].used || !g_api_memory_blocks[destination - 1].used ||
+                amount > g_api_memory_blocks[source - 1].size ||
+                amount > g_api_memory_blocks[destination - 1].size) {
+                add_history_line(console, "MEM_COPY requires source handle, destination handle, and bounded size.");
+            } else {
+                const ApiMemoryBlock& src = g_api_memory_blocks[source - 1];
+                const ApiMemoryBlock& dst = g_api_memory_blocks[destination - 1];
+                if (src.offset < dst.offset) {
+                    for (uint32_t index = 0; index < amount; ++index)
+                        g_api_memory[dst.offset + index] = g_api_memory[src.offset + index];
+                } else if (src.offset > dst.offset) {
+                    for (uint32_t index = amount; index > 0; --index)
+                        g_api_memory[dst.offset + index - 1] = g_api_memory[src.offset + index - 1];
+                } else {
+                    // Same allocation: the requested copy is already satisfied.
+                }
+                add_history_line(console, "AP memory copied.", g_prompt_color);
+            }
+            return true;
+        }
+        case annyos::api::Service::disk_info: {
+            const DriveState& drive = g_drives[state.working_directory->drive_index];
+            if (!drive.ata_ready) add_history_line(console, "No ATA disk is active.");
+            else {
+                add_api_decimal(console, "Disk sectors: ", drive.block.sector_count);
+                add_api_decimal(console, "Sector size: ", drive.block.sector_size);
+                add_history_line(console, drive.mounted ? "Filesystem: FAT32" : "Filesystem: unmounted");
+            }
+            return true;
+        }
+        case annyos::api::Service::play_tone: {
+            uint32_t frequency = 0, duration = 0;
+            if (g_audio_volume == 0 || !parse_decimal(first, &frequency) ||
+                !parse_decimal(second, &duration) || duration > 5000 ||
+                !annyos::speaker::tone(frequency, duration)) {
+                add_history_line(console, "PLAY_TONE requires frequency 20-20000 Hz and duration up to 5000 ms.");
+            } else add_history_line(console, "Tone complete.", g_prompt_color);
+            return true;
+        }
+        case annyos::api::Service::audio_stop:
+            annyos::speaker::stop();
+            add_history_line(console, "Speaker stopped.", g_prompt_color);
+            return true;
+        case annyos::api::Service::sound_effect:
+            if (equal_ignore_case(first, "ERROR")) (void)annyos::speaker::tone(220, 100);
+            else if (equal_ignore_case(first, "SUCCESS")) (void)annyos::speaker::tone(880, 80);
+            else if (equal_ignore_case(first, "ALERT")) (void)annyos::speaker::tone(660, 160);
+            else add_history_line(console, "SOUND_EFFECT supports SUCCESS, ERROR, and ALERT.");
+            return true;
+        case annyos::api::Service::speaker_init:
+            add_history_line(console, "PC speaker is initialized by the first PLAY_TONE call.");
+            return true;
+        case annyos::api::Service::audio_volume: {
+            uint32_t volume = 0;
+            if (!parse_decimal(first, &volume) || volume > 100) {
+                add_history_line(console, "AUDIO_VOLUME accepts 0 (mute) or 100 (full PC speaker output).");
+            } else {
+                g_audio_volume = volume == 0 ? 0 : 100;
+                add_history_line(console, g_audio_volume == 0 ? "PC speaker muted." :
+                                 "PC speaker unmuted; hardware has no amplitude control.", g_prompt_color);
+            }
+            return true;
+        }
+        case annyos::api::Service::ui_set_title:
+            return api_write_title(context, first, static_cast<uint8_t>(bounded_string_length(
+                first, annyos::api::kMaximumServiceArgumentBytes)));
+        case annyos::api::Service::ui_print_text:
+            return api_write_line(context, first, static_cast<uint8_t>(bounded_string_length(
+                first, annyos::api::kMaximumServiceArgumentBytes)));
+        case annyos::api::Service::ui_set_color:
+            set_console_color(console, first);
+            return true;
+        case annyos::api::Service::ui_theme_dark:
+            set_console_color(console, "MATRIX");
+            return true;
+        case annyos::api::Service::ui_theme_light:
+            set_console_color(console, "BLUE");
+            return true;
+        case annyos::api::Service::ui_draw_pixel:
+        case annyos::api::Service::ui_draw_rect: {
+            uint32_t x = 0, y = 0, width = 1, height = 1, red = 0, green = 0, blue = 0;
+            const bool rectangle = service == annyos::api::Service::ui_draw_rect;
+            const char* width_arg = rectangle ? api_argument(arguments, 2) : "1";
+            const char* height_arg = rectangle ? api_argument(arguments, 3) : "1";
+            const uint32_t color_index = rectangle ? 4 : 2;
+            const bool parsed = parse_decimal(first, &x) && parse_decimal(second, &y) &&
+                parse_decimal(width_arg, &width) && parse_decimal(height_arg, &height) &&
+                parse_decimal(api_argument(arguments, color_index), &red) &&
+                parse_decimal(api_argument(arguments, color_index + 1), &green) &&
+                parse_decimal(api_argument(arguments, color_index + 2), &blue);
+            if (!parsed || red > 255 || green > 255 || blue > 255 ||
+                x > static_cast<uint32_t>(INT32_MAX) || y > static_cast<uint32_t>(INT32_MAX) ||
+                width > static_cast<uint32_t>(INT32_MAX) || height > static_cast<uint32_t>(INT32_MAX)) {
+                add_history_line(console, rectangle
+                    ? "UI_DRAW_RECT args: X Y WIDTH HEIGHT RED GREEN BLUE (0-255)."
+                    : "UI_DRAW_PIXEL args: X Y RED GREEN BLUE (0-255).");
+            } else {
+                fill_rect(*state.framebuffer, static_cast<int32_t>(x), static_cast<int32_t>(y),
+                    static_cast<int32_t>(width), static_cast<int32_t>(height),
+                    {static_cast<uint8_t>(red), static_cast<uint8_t>(green), static_cast<uint8_t>(blue)});
+            }
+            return true;
+        }
+        case annyos::api::Service::ui_open_editor: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            if (!drive.mounted) add_history_line(console, "FAT32 volume not found.");
+            else begin_file_edit(console, drive.volume,
+                state.working_directory->cluster_stack[state.working_directory->depth], first);
+            return true;
+        }
+        case annyos::api::Service::inp_read_key:
+        case annyos::api::Service::inp_check_key: {
+            const auto* record = g_driver_registry.query(annyos::drivers::ServiceId::keyboard_input, 1);
+            const auto* keyboard = record == nullptr ? nullptr :
+                static_cast<const annyos::drivers::service::KeyboardInputV1*>(record->interface_pointer);
+            annyos::input::KeyEvent event{};
+            if (keyboard == nullptr || !keyboard->poll(&event)) {
+                add_history_line(console, "No key event available.");
+            } else if (event.action == annyos::input::KeyAction::character) {
+                char line[2] = {event.character, '\0'};
+                if (service == annyos::api::Service::inp_check_key && *first != '\0' &&
+                    first[0] != event.character) add_history_line(console, "Key does not match.");
+                else add_history_line(console, line);
+            } else add_history_line(console, "Keyboard event received.");
+            return true;
+        }
+        case annyos::api::Service::serial_write:
+            add_history_line(console, annyos::serial::write(first)
+                ? "Serial text sent." : "Serial output unavailable.");
+            return true;
+        case annyos::api::Service::serial_read: {
+            uint8_t byte = 0;
+            if (!annyos::serial::read_byte(&byte)) add_history_line(console, "No serial byte available.");
+            else {
+                char line[2] = {byte >= 32 && byte <= 126 ? static_cast<char>(byte) : '?', '\0'};
+                add_history_line(console, line);
+            }
+            return true;
+        }
+        case annyos::api::Service::usb_scan: {
+            annyos::input::usb::ControllerInfo controller{};
+            if (!annyos::input::usb::probe_xhci(&controller)) {
+                add_history_line(console, "No xHCI controller found.");
+            } else {
+                add_history_line(console, "xHCI controller found; USB device enumeration is not active.");
+            }
+            return true;
+        }
+        case annyos::api::Service::time_get_rtc:
+            add_rtc_report(console, true);
+            add_rtc_report(console, false);
+            return true;
+        case annyos::api::Service::fs_mkdir:
+        case annyos::api::Service::fs_rmdir:
+        case annyos::api::Service::fs_copy:
+        case annyos::api::Service::fs_move: {
+            DriveState& drive = g_drives[state.working_directory->drive_index];
+            const uint32_t directory = state.working_directory->cluster_stack[state.working_directory->depth];
+            if (!drive.mounted) {
+                add_history_line(console, "FAT32 volume not found.");
+                return true;
+            }
+            bool success = false;
+            const char* message = "FAT32 operation failed. Check 8.3 names and available space.";
+            switch (service) {
+                case annyos::api::Service::fs_mkdir:
+                    success = annyos::storage::fat32_make_directory(drive.volume, directory, first);
+                    message = success ? "Directory created." : message;
+                    break;
+                case annyos::api::Service::fs_rmdir:
+                    success = annyos::storage::fat32_remove_directory(drive.volume, directory, first);
+                    message = success ? "Empty directory removed." :
+                        "Directory removal failed; it must be empty.";
+                    break;
+                case annyos::api::Service::fs_copy:
+                    success = annyos::storage::fat32_copy_file(drive.volume, directory, first, second);
+                    message = success ? "File copied." :
+                        "Copy failed; files are limited to 4 KiB and destination must not exist.";
+                    break;
+                case annyos::api::Service::fs_move:
+                    success = annyos::storage::fat32_move_file(drive.volume, directory, first, second);
+                    message = success ? "File moved." :
+                        "Move failed; files are limited to 4 KiB and destination must not exist.";
+                    break;
+                default: break;
+            }
+            add_history_line(console, message, success ? g_prompt_color : g_text_color);
+            return true;
+        }
+        case annyos::api::Service::fs_mount_apfs:
+        case annyos::api::Service::fs_mount_ntfs:
+            add_history_line(console, "APFS/NTFS drivers currently probe metadata; they do not mount filesystems.");
+            return true;
+        case annyos::api::Service::disk_format:
+            add_history_line(console, "Disk formatting is disabled; it requires a dedicated confirmed disk utility.");
+            return true;
+        case annyos::api::Service::ui_cursor_pos:
+            add_history_line(console, "Cursor positioning is unavailable in the current text console.");
+            return true;
+        case annyos::api::Service::mouse_get_pos:
+        case annyos::api::Service::mouse_check_click:
+            add_history_line(console, "Mouse input is not registered by the current kernel.");
+            return true;
+        default:
+            return api_invoke_service(context, service);
+    }
 }
 
 annyos::api::AnnyOsApiV1 make_api(KernelApiContext& context) {
     return {sizeof(annyos::api::AnnyOsApiV1), annyos::api::kVersion, &context,
-            api_write_line, api_write_title, api_write_help_row, api_invoke_service};
+            api_write_line, api_write_title, api_write_help_row, api_invoke_service,
+            api_invoke_service_v3};
 }
 
 bool make_ap_short_name(const char* command, char output[13]) {
@@ -1496,6 +2006,45 @@ bool handle_configsave_command(ConsoleState& console, const char* arguments) {
     return true;
 }
 
+void list_directory(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
+                    const WorkingDirectory& current_directory, const char* requested_path) {
+    WorkingDirectory target_directory = current_directory;
+    while (*requested_path == ' ') ++requested_path;
+    if (*requested_path != '\0' &&
+        !change_directory(&target_directory, volume, requested_path)) {
+        add_history_line(console, "Directory not found. Usage: DIR [PATH]");
+        return;
+    }
+
+    char directory_line[kLineCapacity] = "DIRECTORY  ";
+    const uint32_t directory_length = append_text(directory_line, 11, sizeof(directory_line),
+                                                   target_directory.path);
+    directory_line[directory_length] = '\0';
+    add_history_line(console, directory_line, g_help_title_color, true);
+    add_history_line(console, "------------------------------------------------");
+    add_directory_row(console, "NAME", "TYPE", "SIZE", g_prompt_color, true);
+
+    DirectoryListing listing{&console, 0, 0, 0};
+    if (!annyos::storage::fat32_list_directory(
+            volume, target_directory.cluster_stack[target_directory.depth],
+            append_fat32_entry, &listing)) {
+        add_history_line(console, "Error reading directory.");
+        return;
+    }
+
+    char summary[kLineCapacity] = "";
+    uint32_t summary_length = 0;
+    append_decimal(summary, &summary_length, listing.file_count);
+    summary_length = append_text(summary, summary_length, sizeof(summary),
+        listing.file_count == 1 ? " file    " : " files    ");
+    append_decimal(summary, &summary_length, listing.directory_count);
+    summary_length = append_text(summary, summary_length, sizeof(summary),
+        listing.directory_count == 1 ? " folder    " : " folders    ");
+    append_decimal(summary, &summary_length, listing.total_bytes);
+    append_text(summary, summary_length, sizeof(summary), " bytes total");
+    add_history_line(console, summary, g_prompt_color);
+}
+
 void submit_command(ConsoleState& console, DriveState* drives,
                     WorkingDirectory* working_directory,
                     const annyos::api::AnnyOsApiV1& api) {
@@ -1523,35 +2072,11 @@ void submit_command(ConsoleState& console, DriveState* drives,
             handle_configsave_command(console, console.input + 11);
         } else if (handle_file_command(console, active_drive, *working_directory)) {
             // File commands are handled against the active FAT32 directory.
-        } else if (command_equals(console.input, "dir")) {
+        } else if (const char* dir_path = command_arguments(console.input, "dir")) {
             if (!fat32_mounted) {
                 add_history_line(console, "FAT32 volume not found.");
             } else {
-                char directory_line[kLineCapacity] = "DIRECTORY  ";
-                const uint32_t directory_length = append_text(directory_line, 11, sizeof(directory_line),
-                                                              working_directory->path);
-                directory_line[directory_length] = '\0';
-                add_history_line(console, directory_line, g_help_title_color, true);
-                add_history_line(console, "------------------------------------------------");
-                add_directory_row(console, "NAME", "TYPE", "SIZE", g_prompt_color, true);
-                DirectoryListing listing{&console, 0, 0, 0};
-                if (!annyos::storage::fat32_list_directory(
-                        fat32_volume, working_directory->cluster_stack[working_directory->depth],
-                        append_fat32_entry, &listing)) {
-                    add_history_line(console, "Error reading current directory.");
-                } else {
-                    char summary[kLineCapacity] = "";
-                    uint32_t summary_length = 0;
-                    append_decimal(summary, &summary_length, listing.file_count);
-                    summary_length = append_text(summary, summary_length, sizeof(summary),
-                        listing.file_count == 1 ? " file    " : " files    ");
-                    append_decimal(summary, &summary_length, listing.directory_count);
-                    summary_length = append_text(summary, summary_length, sizeof(summary),
-                        listing.directory_count == 1 ? " folder    " : " folders    ");
-                    append_decimal(summary, &summary_length, listing.total_bytes);
-                    append_text(summary, summary_length, sizeof(summary), " bytes total");
-                    add_history_line(console, summary, g_prompt_color);
-                }
+                list_directory(console, fat32_volume, *working_directory, dir_path);
             }
         } else if (command_equals(console.input, "cd")) {
             char current_line[kLineCapacity] = "Current directory: ";
@@ -1812,7 +2337,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.3]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.4]");
         add_history_line(console, "Type HELP for commands.");
     }
     redraw_history(boot_info->framebuffer, console, working_directory);

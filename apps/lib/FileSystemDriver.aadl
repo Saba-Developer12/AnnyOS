@@ -1,0 +1,14 @@
+class FileSystemDriverApi {
+    method create() { api(FS_CREATE); }
+    method read() { api(FS_READ); }
+    method edit() { api(FS_EDIT); }
+    method delete() { api(FS_DELETE); }
+    method exists() { api(FS_EXISTS); }
+    method listDirectory() { api(FS_LIST_DIR); }
+    method makeDirectory() { api(FS_MKDIR); }
+    method removeDirectory() { api(FS_RMDIR); }
+    method copy() { api(FS_COPY); }
+    method move() { api(FS_MOVE); }
+    method mountApfs() { api(FS_MOUNT_APFS); }
+    method mountNtfs() { api(FS_MOUNT_NTFS); }
+}

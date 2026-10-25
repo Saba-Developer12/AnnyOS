@@ -43,5 +43,14 @@ bool fat32_write_file(const Fat32Volume& volume, uint32_t directory_cluster,
 // removed by this operation.
 bool fat32_delete_file(const Fat32Volume& volume, uint32_t directory_cluster,
                        const char* short_name);
+bool fat32_make_directory(const Fat32Volume& volume, uint32_t parent_cluster,
+                          const char* short_name);
+bool fat32_remove_directory(const Fat32Volume& volume, uint32_t parent_cluster,
+                            const char* short_name);
+bool fat32_copy_file(const Fat32Volume& volume, uint32_t directory_cluster,
+                     const char* source_name, const char* destination_name);
+bool fat32_move_file(const Fat32Volume& volume, uint32_t directory_cluster,
+                     const char* source_name, const char* destination_name);
+bool fat32_count_free_clusters(const Fat32Volume& volume, uint32_t* free_clusters);
 
 } // namespace annyos::storage

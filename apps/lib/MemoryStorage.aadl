@@ -1,0 +1,10 @@
+class MemoryStorageApi {
+    method allocate() { api(MEM_ALLOC); }
+    method free() { api(MEM_FREE); }
+    method totalMemory() { api(MEM_TOTAL); }
+    method freeSpace() { api(MEM_FREE_SPACE); }
+    method copy() { api(MEM_COPY); }
+    method set() { api(MEM_SET); }
+    method diskInfo() { api(DISK_INFO); }
+    method formatDisk() { api(DISK_FORMAT); }
+}

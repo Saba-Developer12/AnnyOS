@@ -29,6 +29,32 @@ bool load_glyphs(FT_Library library, const char* font_path, Glyph* glyphs) {
     bool valid = true;
     for (unsigned index = 0; index < kCharacterCount; ++index) {
         const unsigned codepoint = kFirstCharacter + index;
+        Glyph& glyph = glyphs[index];
+        if (FT_Get_Char_Index(face, codepoint) == 0) {
+            // The supplied regular and bold font subsets omit parentheses.
+            // FreeType otherwise renders glyph zero (a tofu box) for them.
+            if (codepoint == '(' || codepoint == ')') {
+                constexpr unsigned short left_parenthesis[kMaximumRows] = {
+                    0x0006, 0x000c, 0x0018, 0x0010, 0x0010, 0x0010,
+                    0x0010, 0x0010, 0x0018, 0x000c, 0x0006
+                };
+                constexpr unsigned short right_parenthesis[kMaximumRows] = {
+                    0x000c, 0x0006, 0x0003, 0x0001, 0x0001, 0x0001,
+                    0x0001, 0x0001, 0x0003, 0x0006, 0x000c
+                };
+                glyph.left = 0;
+                glyph.top = 11;
+                glyph.width = 5;
+                glyph.height = 11;
+                glyph.advance = 5;
+                const unsigned short* rows = codepoint == '(' ? left_parenthesis : right_parenthesis;
+                for (unsigned y = 0; y < glyph.height; ++y) glyph.rows[y] = rows[y];
+                continue;
+            }
+            std::fprintf(stderr, "Font %s is missing ASCII character %u\n", font_path, codepoint);
+            valid = false;
+            break;
+        }
         if (FT_Load_Char(face, codepoint, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL) != 0) {
             std::fprintf(stderr, "Font %s is missing ASCII character %u\n", font_path, codepoint);
             valid = false;
@@ -36,7 +62,6 @@ bool load_glyphs(FT_Library library, const char* font_path, Glyph* glyphs) {
         }
         const FT_GlyphSlot slot = face->glyph;
         const FT_Bitmap& bitmap = slot->bitmap;
-        Glyph& glyph = glyphs[index];
         glyph.left = slot->bitmap_left;
         glyph.top = slot->bitmap_top;
         glyph.width = bitmap.width;

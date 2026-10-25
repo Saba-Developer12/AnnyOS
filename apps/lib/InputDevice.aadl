@@ -1,0 +1,10 @@
+class InputDeviceApi {
+    method readKey() { api(INP_READ_KEY); }
+    method checkKey() { api(INP_CHECK_KEY); }
+    method mousePosition() { api(MOUSE_GET_POS); }
+    method checkMouseClick() { api(MOUSE_CHECK_CLICK); }
+    method serialWrite() { api(SERIAL_WRITE); }
+    method serialRead() { api(SERIAL_READ); }
+    method scanUsb() { api(USB_SCAN); }
+    method readRtc() { api(TIME_GET_RTC); }
+}
