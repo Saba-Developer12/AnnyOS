@@ -25,6 +25,8 @@ $sources = @(
     @{ Path = 'src\drivers\input\ps2_keyboard.cpp'; Name = 'ps2_keyboard.obj' },
     @{ Path = 'src\drivers\input\usb_hid.cpp'; Name = 'usb_hid.obj' },
     @{ Path = 'src\drivers\storage\fat32.cpp'; Name = 'fat32.obj' },
+    @{ Path = 'src\drivers\storage\ntfs.cpp'; Name = 'ntfs.obj' },
+    @{ Path = 'src\drivers\storage\apfs.cpp'; Name = 'apfs.obj' },
     @{ Path = 'src\drivers\storage\ata_pio.cpp'; Name = 'ata_pio.obj' },
     @{ Path = 'src\drivers\system\timer_pit.cpp'; Name = 'timer_pit.obj' },
     @{ Path = 'src\drivers\system\serial_com1.cpp'; Name = 'serial_com1.obj' },
@@ -46,6 +48,8 @@ foreach ($source in $sources) {
 
 $moduleSources = @(
     @{ Path = 'src\drivers\storage\fat32_module.cpp'; Name = 'fat32_module.obj' },
+    @{ Path = 'src\drivers\storage\ntfs_module.cpp'; Name = 'ntfs_module.obj' },
+    @{ Path = 'src\drivers\storage\apfs_module.cpp'; Name = 'apfs_module.obj' },
     @{ Path = 'src\drivers\input\ps2kbd_module.cpp'; Name = 'ps2kbd_module.obj' },
     @{ Path = 'src\drivers\input\usbhid_module.cpp'; Name = 'usbhid_module.obj' },
     @{ Path = 'src\drivers\system\timer_module.cpp'; Name = 'timer_module.obj' },
@@ -72,12 +76,28 @@ $fat32ModuleArgs = @(
     '/export:annyos_fat32_mount', '/export:annyos_fat32_list_root',
     '/export:annyos_fat32_list_directory',
     '/export:annyos_fat32_find_file', '/export:annyos_fat32_read_file',
-    '/export:annyos_fat32_write_file',
+    '/export:annyos_fat32_write_file', '/export:annyos_fat32_delete_file',
     "/out:$(Join-Path $buildDir 'fat32.sys')",
     (Join-Path $objectDir 'fat32.obj'), (Join-Path $objectDir 'fat32_module.obj')
 )
 & $linker @fat32ModuleArgs
 if ($LASTEXITCODE -ne 0) { throw 'FAT32 driver module link failed.' }
+
+$ntfsModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_ntfs_probe', "/out:$(Join-Path $buildDir 'ntfs.sys')",
+    (Join-Path $objectDir 'ntfs.obj'), (Join-Path $objectDir 'ntfs_module.obj')
+)
+& $linker @ntfsModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'NTFS probe module link failed.' }
+
+$apfsModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_apfs_probe', "/out:$(Join-Path $buildDir 'apfs.sys')",
+    (Join-Path $objectDir 'apfs.obj'), (Join-Path $objectDir 'apfs_module.obj')
+)
+& $linker @apfsModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'APFS probe module link failed.' }
 
 $ataModuleArgs = @(
     '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
@@ -145,6 +165,8 @@ foreach ($fontFile in $fontFiles) {
 }
 Copy-Item -LiteralPath (Join-Path $root 'font\segoe-ui\README.TXT') -Destination $fontDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'fat32.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'ntfs.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'apfs.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'ata.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'ps2kbd.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'usbhid.sys') -Destination $driverDir -Force

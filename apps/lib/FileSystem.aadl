@@ -1,0 +1,10 @@
+// Help wrapper for the filesystem commands implemented by the kernel CLI.
+// AP v1 applications can display these commands but do not have raw file I/O.
+class FileSystem {
+    method showCommands() {
+        row("CREATE <FILE>", "Create empty file; add TEXT for initial contents");
+        row("EDIT <FILE>", "Edit lines with :REPLACE, :DELETE, and :SAVE");
+        row("READ <FILE>", "Display a text file in the current directory");
+        row("DELETE <FILE>", "Delete a file and free its FAT32 clusters");
+    }
+}

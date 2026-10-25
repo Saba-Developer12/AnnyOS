@@ -1,6 +1,6 @@
 # AnnyOS
 
-Current version: **0.4.0**
+Current version: **0.4.1**
 
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,
@@ -20,6 +20,8 @@ The project is an early development system; it is not yet a general-purpose OS.
   keyboard enumeration/transport is not implemented yet; PS/2 remains the
   active input path. See [USB HID status](docs/USB_HID.md).
 - FAT32 volumes on legacy ATA devices can be selected as `C:` through `F:`.
+- Text files can be created, read, edited, and deleted from the shell with
+  `CREATE`, `READ`, `EDIT`, and `DELETE` in the current FAT32 directory.
 - AP version 1 bytecode applications, including `HELP`, `VER`, `MEM`, `DATE`,
   `TIME`, and `REBOOT`.
 - AADL preview compiler for classes, inheritance, compile-time objects/methods,
@@ -28,8 +30,10 @@ The project is an early development system; it is not yet a general-purpose OS.
 - Segoe UI font assets rasterized into a freestanding kernel header.
 - Build scripts for Windows PowerShell and Unix-like hosts, plus a QEMU launcher.
 
-FAT32 is the only filesystem currently implemented. FAT12, FAT16, exFAT, ext2,
-ISO9660, and UDF are planned. USB mass storage is not supported yet. AP applications are interpreted bytecode; the
+FAT32 is the only filesystem currently mounted for file operations. NTFS and
+APFS boot/container metadata can be detected, but neither is mounted yet.
+FAT12, FAT16, exFAT, ext2, ISO9660, and UDF are planned. USB mass storage is
+not supported yet. AP applications are interpreted bytecode; the
 kernel does not yet provide native process execution, user mode, paging, or
 process isolation. See [the architecture notes](docs/ARCHITECTURE.md) and
 [AP format documentation](docs/AP_FORMAT.md) for details.

@@ -31,3 +31,8 @@ the AP header. The SDK's `apps/lib/ConfigSave.aadl` module exposes these calls
 as a `ConfigSave` class. Imports resolve recursively relative to each source
 file; `-I DIR` adds an import search root. `apps/CFGDEMO.aadl` is a small
 example that uses the class to list persisted settings.
+
+`apps/lib/FileSystem.aadl` supplies the file-command rows used by `HELP`.
+Current AP v1 applications can display this help, but filesystem mutation is
+available only through the kernel CLI (`CREATE`, `EDIT`, `READ`, and `DELETE`);
+the AP API does not grant applications direct file access.

@@ -26,8 +26,7 @@ struct Fat32DirectoryEntry {
 
 using Fat32DirectoryCallback = bool (*)(void* context, const Fat32DirectoryEntry& entry);
 
-// Mounts a FAT32 volume at the start of the supplied block device. This
-// initial driver supports sector reads and root-directory enumeration.
+// Mounts a FAT32 volume found on the supplied block device.
 bool fat32_mount(const BlockDevice& device, Fat32Volume* volume);
 bool fat32_list_root(const Fat32Volume& volume, Fat32DirectoryCallback callback, void* context);
 bool fat32_list_directory(const Fat32Volume& volume, uint32_t directory_cluster,
@@ -36,10 +35,13 @@ bool fat32_find_file(const Fat32Volume& volume, uint32_t directory_cluster,
                      const char* short_name, Fat32DirectoryEntry* entry);
 bool fat32_read_file(const Fat32Volume& volume, const Fat32DirectoryEntry& entry,
                      uint8_t* output, uint32_t output_capacity, uint32_t* bytes_read);
-// Creates or replaces a short-name file with data occupying at most one FAT32
-// cluster. The operation writes a fresh cluster before publishing its directory
-// entry, so an interrupted update leaves the previous file contents intact.
+// Creates or atomically replaces a short-name file. Data may span multiple
+// clusters; a zero-sized file has no cluster chain.
 bool fat32_write_file(const Fat32Volume& volume, uint32_t directory_cluster,
                       const char* short_name, const uint8_t* data, uint32_t size);
+// Removes a file entry and releases its FAT cluster chain. Directories are not
+// removed by this operation.
+bool fat32_delete_file(const Fat32Volume& volume, uint32_t directory_cluster,
+                       const char* short_name);
 
 } // namespace annyos::storage

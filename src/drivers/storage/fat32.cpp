@@ -5,6 +5,7 @@ namespace {
 constexpr uint32_t kSectorBytes = 512;
 constexpr uint32_t kFatEndOfChain = 0x0ffffff8;
 constexpr uint32_t kFatBadCluster = 0x0ffffff7;
+constexpr uint8_t kZeroSector[kSectorBytes]{};
 constexpr uint8_t kEspTypeGuid[16] = {
     0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
     0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
@@ -130,8 +131,13 @@ struct DirectorySlot {
     uint32_t lba;
     uint16_t offset;
     uint32_t old_first_cluster;
+    uint8_t attributes;
     bool existed;
 };
+
+bool write_fat_entry(const Fat32Volume& volume, uint32_t cluster, uint32_t value);
+bool find_free_cluster(const Fat32Volume& volume, uint32_t* free_cluster);
+bool clear_cluster_data(const Fat32Volume& volume, uint32_t cluster);
 
 bool encode_short_name(const char* name, uint8_t output[11]) {
     if (name == nullptr) return false;
@@ -168,7 +174,10 @@ bool locate_directory_slot(const Fat32Volume& volume, uint32_t directory_cluster
     uint8_t fat[kSectorBytes];
     uint32_t cluster = directory_cluster;
     bool have_deleted_slot = false;
-    DirectorySlot deleted_slot{};
+    // Initialized field-by-field only when a deleted entry is found. Keeping
+    // this uninitialized until then avoids a hosted memset dependency in the
+    // freestanding driver module.
+    DirectorySlot deleted_slot;
     for (uint32_t chain = 0; chain < volume.cluster_count; ++chain) {
         for (uint32_t sector_index = 0; sector_index < volume.sectors_per_cluster; ++sector_index) {
             uint32_t lba;
@@ -182,6 +191,7 @@ bool locate_directory_slot(const Fat32Volume& volume, uint32_t directory_cluster
                         slot->lba = lba;
                         slot->offset = static_cast<uint16_t>(offset);
                         slot->old_first_cluster = 0;
+                        slot->attributes = 0;
                         slot->existed = false;
                     }
                     return true;
@@ -191,6 +201,7 @@ bool locate_directory_slot(const Fat32Volume& volume, uint32_t directory_cluster
                         deleted_slot.lba = lba;
                         deleted_slot.offset = static_cast<uint16_t>(offset);
                         deleted_slot.old_first_cluster = 0;
+                        deleted_slot.attributes = 0;
                         deleted_slot.existed = false;
                         have_deleted_slot = true;
                     }
@@ -210,6 +221,7 @@ bool locate_directory_slot(const Fat32Volume& volume, uint32_t directory_cluster
                     slot->offset = static_cast<uint16_t>(offset);
                     slot->old_first_cluster =
                         (static_cast<uint32_t>(read_u16(item + 20)) << 16) | read_u16(item + 26);
+                    slot->attributes = item[11];
                     slot->existed = true;
                     return true;
                 }
@@ -222,7 +234,22 @@ bool locate_directory_slot(const Fat32Volume& volume, uint32_t directory_cluster
                 *slot = deleted_slot;
                 return true;
             }
-            return false;
+            uint32_t new_cluster;
+            if (!find_free_cluster(volume, &new_cluster) ||
+                !write_fat_entry(volume, new_cluster, kFatEndOfChain)) return false;
+            if (!clear_cluster_data(volume, new_cluster) ||
+                !write_fat_entry(volume, cluster, new_cluster)) {
+                write_fat_entry(volume, new_cluster, 0);
+                return false;
+            }
+            uint32_t new_lba;
+            if (!cluster_lba(volume, new_cluster, 0, &new_lba)) return false;
+            slot->lba = new_lba;
+            slot->offset = 0;
+            slot->old_first_cluster = 0;
+            slot->attributes = 0;
+            slot->existed = false;
+            return true;
         }
         if (following < 2 || following == kFatBadCluster || following >= volume.cluster_count + 2)
             return false;
@@ -296,17 +323,68 @@ bool write_cluster_data(const Fat32Volume& volume, uint32_t cluster,
     return true;
 }
 
-void release_cluster_chain(const Fat32Volume& volume, uint32_t cluster) {
+bool clear_cluster_data(const Fat32Volume& volume, uint32_t cluster) {
+    if (volume.device.write_sector == nullptr || volume.sectors_per_cluster == 0) return false;
+    for (uint32_t index = 0; index < volume.sectors_per_cluster; ++index) {
+        uint32_t lba;
+        if (!cluster_lba(volume, cluster, index, &lba) ||
+            !volume.device.write_sector(volume.device.context, lba, kZeroSector)) return false;
+    }
+    return true;
+}
+
+bool release_cluster_chain(const Fat32Volume& volume, uint32_t cluster) {
+    if (cluster == 0) return true;
     uint8_t fat[kSectorBytes];
     for (uint32_t count = 0; count < volume.cluster_count; ++count) {
-        if (cluster < 2 || cluster >= volume.cluster_count + 2) return;
+        if (cluster < 2 || cluster >= volume.cluster_count + 2) return false;
         uint32_t following;
-        if (!next_cluster(volume, cluster, fat, &following)) return;
-        if (!write_fat_entry(volume, cluster, 0)) return;
-        if (following >= kFatEndOfChain) return;
-        if (following < 2 || following == kFatBadCluster || following >= volume.cluster_count + 2) return;
+        if (!next_cluster(volume, cluster, fat, &following) ||
+            !write_fat_entry(volume, cluster, 0)) return false;
+        if (following >= kFatEndOfChain) return true;
+        if (following < 2 || following == kFatBadCluster || following >= volume.cluster_count + 2) return false;
         cluster = following;
     }
+    return false;
+}
+
+bool allocate_file_chain(const Fat32Volume& volume, const uint8_t* data, uint32_t size,
+                         uint32_t* first_cluster) {
+    if (first_cluster == nullptr) return false;
+    *first_cluster = 0;
+    if (size == 0) return true;
+    const uint64_t cluster_bytes = static_cast<uint64_t>(volume.sectors_per_cluster) * kSectorBytes;
+    if (cluster_bytes == 0 || size > cluster_bytes * volume.cluster_count) return false;
+
+    uint32_t remaining = size;
+    uint32_t consumed = 0;
+    uint32_t previous = 0;
+    while (remaining != 0) {
+        uint32_t cluster = 0;
+        if (!find_free_cluster(volume, &cluster) ||
+            !write_fat_entry(volume, cluster, kFatEndOfChain)) {
+            if (*first_cluster != 0) release_cluster_chain(volume, *first_cluster);
+            return false;
+        }
+
+        const uint32_t amount = remaining < cluster_bytes
+            ? remaining : static_cast<uint32_t>(cluster_bytes);
+        if (!write_cluster_data(volume, cluster, data + consumed, amount)) {
+            write_fat_entry(volume, cluster, 0);
+            if (*first_cluster != 0) release_cluster_chain(volume, *first_cluster);
+            return false;
+        }
+        if (previous != 0 && !write_fat_entry(volume, previous, cluster)) {
+            write_fat_entry(volume, cluster, 0);
+            release_cluster_chain(volume, *first_cluster);
+            return false;
+        }
+        if (*first_cluster == 0) *first_cluster = cluster;
+        previous = cluster;
+        consumed += amount;
+        remaining -= amount;
+    }
+    return true;
 }
 
 } // namespace
@@ -475,47 +553,61 @@ bool fat32_read_file(const Fat32Volume& volume, const Fat32DirectoryEntry& entry
 
 bool fat32_write_file(const Fat32Volume& volume, uint32_t directory_cluster,
                       const char* short_name, const uint8_t* data, uint32_t size) {
-    if (data == nullptr || size == 0 || volume.device.write_sector == nullptr ||
+    if ((size != 0 && data == nullptr) || volume.device.write_sector == nullptr ||
         volume.device.read_sector == nullptr || volume.device.sector_size != kSectorBytes ||
-        volume.sectors_per_cluster == 0 ||
-        size > static_cast<uint64_t>(volume.sectors_per_cluster) * kSectorBytes) return false;
+        volume.sectors_per_cluster == 0 || volume.cluster_count == 0) return false;
     uint8_t name[11];
     if (!encode_short_name(short_name, name)) return false;
 
     DirectorySlot slot{};
     if (!locate_directory_slot(volume, directory_cluster, name, &slot)) return false;
-    uint32_t new_cluster;
-    if (!find_free_cluster(volume, &new_cluster) ||
-        !write_fat_entry(volume, new_cluster, kFatEndOfChain)) return false;
-    if (!write_cluster_data(volume, new_cluster, data, size)) {
-        write_fat_entry(volume, new_cluster, 0);
-        return false;
-    }
+    if (slot.existed && (slot.attributes & 0x01u) != 0) return false;
+    uint32_t new_first_cluster = 0;
+    if (!allocate_file_chain(volume, data, size, &new_first_cluster)) return false;
 
     uint8_t sector[kSectorBytes];
     if (!volume.device.read_sector(volume.device.context, slot.lba, sector)) {
-        write_fat_entry(volume, new_cluster, 0);
+        if (new_first_cluster != 0) release_cluster_chain(volume, new_first_cluster);
         return false;
     }
     uint8_t* entry = sector + slot.offset;
     for (uint32_t i = 0; i < 11; ++i) entry[i] = name[i];
     entry[11] = 0x20; // Archive attribute.
     for (uint32_t i = 12; i < 20; ++i) entry[i] = 0;
-    entry[20] = static_cast<uint8_t>(new_cluster >> 16);
-    entry[21] = static_cast<uint8_t>(new_cluster >> 24);
+    entry[20] = static_cast<uint8_t>(new_first_cluster >> 16);
+    entry[21] = static_cast<uint8_t>(new_first_cluster >> 24);
     entry[22] = entry[23] = entry[24] = entry[25] = 0;
-    entry[26] = static_cast<uint8_t>(new_cluster);
-    entry[27] = static_cast<uint8_t>(new_cluster >> 8);
+    entry[26] = static_cast<uint8_t>(new_first_cluster);
+    entry[27] = static_cast<uint8_t>(new_first_cluster >> 8);
     entry[28] = static_cast<uint8_t>(size);
     entry[29] = static_cast<uint8_t>(size >> 8);
     entry[30] = static_cast<uint8_t>(size >> 16);
     entry[31] = static_cast<uint8_t>(size >> 24);
     if (!volume.device.write_sector(volume.device.context, slot.lba, sector)) {
-        write_fat_entry(volume, new_cluster, 0);
+        if (new_first_cluster != 0) release_cluster_chain(volume, new_first_cluster);
         return false;
     }
-    if (slot.existed) release_cluster_chain(volume, slot.old_first_cluster);
+    if (slot.existed && !release_cluster_chain(volume, slot.old_first_cluster)) return false;
     return true;
+}
+
+bool fat32_delete_file(const Fat32Volume& volume, uint32_t directory_cluster,
+                       const char* short_name) {
+    if (volume.device.read_sector == nullptr || volume.device.write_sector == nullptr ||
+        volume.device.sector_size != kSectorBytes) return false;
+    uint8_t name[11];
+    if (!encode_short_name(short_name, name)) return false;
+    DirectorySlot slot{};
+    if (!locate_directory_slot(volume, directory_cluster, name, &slot) || !slot.existed ||
+        (slot.attributes & 0x01u) != 0) return false;
+
+    uint8_t sector[kSectorBytes];
+    if (!volume.device.read_sector(volume.device.context, slot.lba, sector)) return false;
+    uint8_t* entry = sector + slot.offset;
+    if (entry[0] == 0 || entry[0] == 0xe5 || (entry[11] & 0x10u) != 0) return false;
+    entry[0] = 0xe5;
+    if (!volume.device.write_sector(volume.device.context, slot.lba, sector)) return false;
+    return release_cluster_chain(volume, slot.old_first_cluster);
 }
 
 } // namespace annyos::storage

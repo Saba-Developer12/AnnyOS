@@ -5,8 +5,10 @@
 #include "annyos/config_save.hpp"
 #include "annyos/driver_registry.hpp"
 #include "annyos/driver_services.hpp"
+#include "annyos/apfs.hpp"
 #include "annyos/fat32.hpp"
 #include "annyos/font_data.hpp"
+#include "annyos/ntfs.hpp"
 #include "annyos/pc_speaker.hpp"
 #include "annyos/ps2_keyboard.hpp"
 #include "annyos/serial.hpp"
@@ -33,6 +35,7 @@ constexpr uint32_t kInputCapacity = 88;
 constexpr uint32_t kWorkingDirectoryDepth = 12;
 constexpr uint32_t kWorkingDirectoryPathCapacity = 80;
 constexpr uint32_t kAtaDriveSlots = 4;
+constexpr uint32_t kFileBufferCapacity = 4096;
 constexpr uint32_t kApBufferCapacity = annyos::application::kApMaximumFileBytes;
 
 struct ConsoleState {
@@ -48,6 +51,10 @@ struct ConsoleState {
     uint32_t command_history_cursor;
     char input[kInputCapacity];
     uint32_t input_length;
+    bool editor_active;
+    char editor_filename[13];
+    uint8_t editor_buffer[kFileBufferCapacity];
+    uint32_t editor_length;
 };
 
 struct WorkingDirectory {
@@ -185,6 +192,22 @@ bool initialize_fat32_driver(void*, annyos::drivers::DriverRegistry& registry) {
                                    : index == 1 ? "AnnyOS: FAT32 drive D: mounted\r\n"
                                    : index == 2 ? "AnnyOS: FAT32 drive E: mounted\r\n"
                                                 : "AnnyOS: FAT32 drive F: mounted\r\n");
+            continue;
+        }
+        annyos::storage::NtfsVolumeInfo ntfs_info{};
+        if (annyos::storage::ntfs_probe(*device, &ntfs_info)) {
+            debug_write(index == 0 ? "AnnyOS: NTFS drive C: detected; mount support not implemented\r\n"
+                                   : index == 1 ? "AnnyOS: NTFS drive D: detected; mount support not implemented\r\n"
+                                   : index == 2 ? "AnnyOS: NTFS drive E: detected; mount support not implemented\r\n"
+                                                : "AnnyOS: NTFS drive F: detected; mount support not implemented\r\n");
+            continue;
+        }
+        annyos::storage::ApfsContainerInfo apfs_info{};
+        if (annyos::storage::apfs_probe(*device, &apfs_info)) {
+            debug_write(index == 0 ? "AnnyOS: APFS drive C: detected; mount support not implemented\r\n"
+                                   : index == 1 ? "AnnyOS: APFS drive D: detected; mount support not implemented\r\n"
+                                   : index == 2 ? "AnnyOS: APFS drive E: detected; mount support not implemented\r\n"
+                                                : "AnnyOS: APFS drive F: detected; mount support not implemented\r\n");
         }
     }
     if (!g_drives[0].mounted) debug_write("AnnyOS: no FAT32 boot disk found\r\n");
@@ -415,6 +438,10 @@ void add_builtin_help(ConsoleState& console) {
     add_help_row(console, "DIR", "List the current directory");
     add_help_row(console, "CD [DIR|..|\\]", "Change directory");
     add_help_row(console, "C: THROUGH F:", "Switch to a mounted ATA drive");
+    add_help_row(console, "CREATE <FILE>", "Create empty file or use CREATE <FILE> TEXT");
+    add_help_row(console, "EDIT <FILE>", "Edit lines with :REPLACE, :DELETE, :SAVE");
+    add_help_row(console, "READ <FILE>", "Print a file's text contents");
+    add_help_row(console, "DELETE <FILE>", "Delete a file and release its clusters");
     add_help_row(console, "CLS", "Clear the screen");
     add_help_row(console, "ECHO <TEXT>", "Print a message");
     add_help_row(console, "SLEEP", "Wait for 500 milliseconds");
@@ -831,7 +858,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.0");
+            add_history_line(*state.console, "AnnyOS Version 0.4.1");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -1024,6 +1051,366 @@ bool try_run_ap(ConsoleState& console, const annyos::storage::Fat32Volume& volum
     return false;
 }
 
+const char* command_arguments(const char* input, const char* command) {
+    uint32_t index = 0;
+    while (command[index] != '\0') {
+        if (input[index] == '\0' || lowercase(input[index]) != command[index]) return nullptr;
+        ++index;
+    }
+    if (input[index] == '\0') return input + index;
+    return input[index] == ' ' ? input + index + 1 : nullptr;
+}
+
+bool parse_file_arguments(const char* arguments, char filename[13], const char** content) {
+    if (arguments == nullptr || filename == nullptr || content == nullptr) return false;
+    while (*arguments == ' ') ++arguments;
+    uint32_t length = 0;
+    while (arguments[length] != '\0' && arguments[length] != ' ') {
+        if (length + 1 >= 13) return false;
+        filename[length] = arguments[length];
+        ++length;
+    }
+    if (length == 0) return false;
+    filename[length] = '\0';
+    arguments += length;
+    while (*arguments == ' ') ++arguments;
+    *content = arguments;
+    return true;
+}
+
+bool is_text_file(const uint8_t* data, uint32_t length) {
+    for (uint32_t index = 0; index < length; ++index) {
+        const uint8_t byte = data[index];
+        if (byte != '\n' && byte != '\r' && byte != '\t' &&
+            (byte < 32 || byte > 126)) return false;
+    }
+    return true;
+}
+
+void display_file_contents(ConsoleState& console, const uint8_t* data, uint32_t length) {
+    if (length == 0) {
+        add_history_line(console, "(empty file)");
+        return;
+    }
+    char line[kLineCapacity];
+    uint32_t line_length = 0;
+    for (uint32_t index = 0; index < length; ++index) {
+        const uint8_t byte = data[index];
+        if (byte == '\r') continue;
+        if (byte == '\n') {
+            line[line_length] = '\0';
+            add_history_line(console, line);
+            line_length = 0;
+            continue;
+        }
+        line[line_length++] = byte == '\t' ? ' ' : static_cast<char>(byte);
+        if (line_length + 1 == kLineCapacity) {
+            line[line_length] = '\0';
+            add_history_line(console, line);
+            line_length = 0;
+        }
+    }
+    if (line_length != 0) {
+        line[line_length] = '\0';
+        add_history_line(console, line);
+    }
+}
+
+bool read_text_file(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
+                    uint32_t directory_cluster, const char* filename,
+                    uint32_t* bytes_read) {
+    annyos::storage::Fat32DirectoryEntry entry{};
+    if (!annyos::storage::fat32_find_file(volume, directory_cluster, filename, &entry)) {
+        add_history_line(console, "File not found.");
+        return false;
+    }
+    if (entry.size > kFileBufferCapacity) {
+        add_history_line(console, "File is larger than the 4 KiB console limit.");
+        return false;
+    }
+    if (!annyos::storage::fat32_read_file(volume, entry, console.editor_buffer,
+                                           kFileBufferCapacity, bytes_read) ||
+        *bytes_read != entry.size) {
+        add_history_line(console, "Could not read file.");
+        return false;
+    }
+    return true;
+}
+
+void begin_file_edit(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
+                     uint32_t directory_cluster, const char* filename) {
+    annyos::storage::Fat32DirectoryEntry entry{};
+    console.editor_length = 0;
+    if (annyos::storage::fat32_find_file(volume, directory_cluster, filename, &entry)) {
+        if (entry.size > kFileBufferCapacity) {
+            add_history_line(console, "File is larger than the 4 KiB editor limit.");
+            return;
+        }
+        uint32_t bytes_read = 0;
+        if (!annyos::storage::fat32_read_file(volume, entry, console.editor_buffer,
+                                               kFileBufferCapacity, &bytes_read) ||
+            bytes_read != entry.size || !is_text_file(console.editor_buffer, bytes_read)) {
+            add_history_line(console, "File cannot be opened as editable text.");
+            return;
+        }
+        console.editor_length = bytes_read;
+        add_history_line(console, "Current file contents:", g_help_title_color, true);
+        display_file_contents(console, console.editor_buffer, console.editor_length);
+    } else {
+        add_history_line(console, "New file. Type lines, then enter :SAVE.", g_help_title_color);
+    }
+
+    uint32_t index = 0;
+    while (filename[index] != '\0' && index + 1 < sizeof(console.editor_filename)) {
+        console.editor_filename[index] = filename[index];
+        ++index;
+    }
+    console.editor_filename[index] = '\0';
+    console.editor_active = true;
+    add_history_line(console, "Add lines; :REPLACE N TEXT, :DELETE N, :CLEAR, :SAVE, :CANCEL.");
+}
+
+bool editor_line_span(const ConsoleState& console, uint32_t requested_line,
+                      uint32_t* line_start, uint32_t* line_end,
+                      uint32_t* content_end) {
+    if (requested_line == 0 || line_start == nullptr || line_end == nullptr ||
+        content_end == nullptr) return false;
+    uint32_t current_line = 1;
+    uint32_t start = 0;
+    for (uint32_t index = 0; index <= console.editor_length; ++index) {
+        if (index != console.editor_length && console.editor_buffer[index] != '\n') continue;
+        if (current_line == requested_line) {
+            *line_start = start;
+            *content_end = index;
+            *line_end = index < console.editor_length ? index + 1 : index;
+            return true;
+        }
+        start = index + 1;
+        ++current_line;
+    }
+    return false;
+}
+
+bool parse_editor_line_command(const char* arguments, uint32_t* line_number,
+                               const char** replacement) {
+    if (arguments == nullptr || line_number == nullptr || replacement == nullptr) return false;
+    while (*arguments == ' ') ++arguments;
+    char digits[11];
+    uint32_t count = 0;
+    while (*arguments >= '0' && *arguments <= '9' && count + 1 < sizeof(digits)) {
+        digits[count++] = *arguments++;
+    }
+    if (count == 0 || (*arguments != '\0' && *arguments != ' ')) return false;
+    digits[count] = '\0';
+    uint32_t parsed = 0;
+    for (uint32_t index = 0; index < count; ++index) {
+        const uint32_t digit = static_cast<uint32_t>(digits[index] - '0');
+        if (parsed > (0xffffffffu - digit) / 10) return false;
+        parsed = parsed * 10 + digit;
+    }
+    *line_number = parsed;
+    while (*arguments == ' ') ++arguments;
+    *replacement = arguments;
+    return *line_number != 0;
+}
+
+bool replace_editor_line(ConsoleState& console, uint32_t line_number,
+                         const char* replacement, bool delete_line) {
+    uint32_t start = 0;
+    uint32_t end = 0;
+    uint32_t content_end = 0;
+    if (!editor_line_span(console, line_number, &start, &end, &content_end)) return false;
+
+    const bool has_newline = end > content_end;
+    const uint32_t old_span = end - start;
+    const uint32_t replacement_length = delete_line
+        ? 0 : bounded_string_length(replacement, kLineCapacity);
+    if (replacement_length >= kLineCapacity) return false;
+    uint32_t new_span = replacement_length + (delete_line ? 0 : (has_newline ? 1 : 0));
+    if (delete_line && has_newline) new_span = 0;
+    if (delete_line && !has_newline) new_span = 0;
+
+    // A deleted line's newline is consumed with it. When deleting the final
+    // unterminated line, this simply removes the remaining bytes.
+    const uint32_t tail_start = end;
+    const uint32_t tail_length = console.editor_length - tail_start;
+    const uint32_t next_length = console.editor_length - old_span + new_span;
+    if (next_length > kFileBufferCapacity) return false;
+
+    const uint32_t new_tail_start = start + new_span;
+    if (new_tail_start > tail_start) {
+        for (uint32_t offset = tail_length; offset > 0; --offset) {
+            console.editor_buffer[new_tail_start + offset - 1] =
+                console.editor_buffer[tail_start + offset - 1];
+        }
+    } else if (new_tail_start < tail_start) {
+        for (uint32_t offset = 0; offset < tail_length; ++offset) {
+            console.editor_buffer[new_tail_start + offset] =
+                console.editor_buffer[tail_start + offset];
+        }
+    }
+    for (uint32_t offset = 0; offset < replacement_length; ++offset) {
+        console.editor_buffer[start + offset] = static_cast<uint8_t>(replacement[offset]);
+    }
+    if (!delete_line && has_newline) {
+        console.editor_buffer[start + replacement_length] = '\n';
+    }
+    console.editor_length = next_length;
+    return true;
+}
+
+void submit_editor_line(ConsoleState& console, DriveState& drive,
+                        const WorkingDirectory& working_directory) {
+    char prompt_line[kLineCapacity] = "EDIT ";
+    uint32_t prompt_length = append_text(prompt_line, 5, sizeof(prompt_line),
+                                         console.editor_filename);
+    prompt_length = append_text(prompt_line, prompt_length, sizeof(prompt_line), "> ");
+    append_text(prompt_line, prompt_length, sizeof(prompt_line), console.input);
+    add_history_line(console, prompt_line, g_prompt_color);
+
+    if (command_equals(console.input, ":cancel")) {
+        console.editor_active = false;
+        add_history_line(console, "Edit cancelled.");
+    } else if (command_equals(console.input, ":clear")) {
+        console.editor_length = 0;
+        add_history_line(console, "Editor buffer cleared.", g_prompt_color);
+    } else if (command_starts_with(console.input, ":replace ")) {
+        uint32_t line_number = 0;
+        const char* replacement = nullptr;
+        if (!parse_editor_line_command(console.input + 9, &line_number, &replacement) ||
+            !replace_editor_line(console, line_number, replacement, false)) {
+            add_history_line(console, "Usage: :REPLACE <LINE> <TEXT> (line numbers start at 1)");
+        } else {
+            add_history_line(console, "Line replaced.", g_prompt_color);
+        }
+    } else if (command_starts_with(console.input, ":delete ")) {
+        uint32_t line_number = 0;
+        const char* unused_text = nullptr;
+        if (!parse_editor_line_command(console.input + 8, &line_number, &unused_text) ||
+            *unused_text != '\0' || !replace_editor_line(console, line_number, "", true)) {
+            add_history_line(console, "Usage: :DELETE <LINE> (line numbers start at 1)");
+        } else {
+            add_history_line(console, "Line deleted.", g_prompt_color);
+        }
+    } else if (command_equals(console.input, ":save")) {
+        const uint8_t* data = console.editor_length == 0 ? nullptr : console.editor_buffer;
+        if (annyos::storage::fat32_write_file(
+                drive.volume, working_directory.cluster_stack[working_directory.depth],
+                console.editor_filename, data, console.editor_length)) {
+            console.editor_active = false;
+            add_history_line(console, "File saved.", g_prompt_color);
+        } else {
+            add_history_line(console, "Save failed; edit buffer is still available.");
+        }
+    } else {
+        const uint32_t line_length = console.input_length;
+        const uint32_t separator = console.editor_length != 0 &&
+            console.editor_buffer[console.editor_length - 1] != '\n' ? 1 : 0;
+        if (line_length + separator + 1 > kFileBufferCapacity - console.editor_length) {
+            add_history_line(console, "Editor limit reached (4 KiB); save or clear the buffer.");
+        } else {
+            if (separator != 0) console.editor_buffer[console.editor_length++] = '\n';
+            for (uint32_t index = 0; index < line_length; ++index) {
+                console.editor_buffer[console.editor_length++] =
+                    static_cast<uint8_t>(console.input[index]);
+            }
+            console.editor_buffer[console.editor_length++] = '\n';
+            add_history_line(console, "Line added.");
+        }
+    }
+    console.input_length = 0;
+    console.input[0] = '\0';
+}
+
+bool handle_file_command(ConsoleState& console, DriveState& drive,
+                         const WorkingDirectory& working_directory) {
+    const char* arguments = nullptr;
+    enum class Operation : uint8_t { create, edit, read, remove };
+    Operation operation;
+    if ((arguments = command_arguments(console.input, "create")) != nullptr) {
+        operation = Operation::create;
+    } else if ((arguments = command_arguments(console.input, "edit")) != nullptr) {
+        operation = Operation::edit;
+    } else if ((arguments = command_arguments(console.input, "read")) != nullptr ||
+               (arguments = command_arguments(console.input, "type")) != nullptr) {
+        operation = Operation::read;
+    } else if ((arguments = command_arguments(console.input, "delete")) != nullptr ||
+               (arguments = command_arguments(console.input, "del")) != nullptr) {
+        operation = Operation::remove;
+    } else {
+        return false;
+    }
+
+    if (!drive.mounted) {
+        add_history_line(console, "FAT32 volume not found.");
+        return true;
+    }
+    char filename[13];
+    const char* content = nullptr;
+    if (!parse_file_arguments(arguments, filename, &content)) {
+        add_history_line(console, "Usage: CREATE|EDIT|READ|DELETE <8.3 FILE>");
+        return true;
+    }
+    const uint32_t directory_cluster =
+        working_directory.cluster_stack[working_directory.depth];
+
+    switch (operation) {
+        case Operation::create: {
+            annyos::storage::Fat32DirectoryEntry existing{};
+            if (annyos::storage::fat32_find_file(drive.volume, directory_cluster,
+                                                  filename, &existing)) {
+                add_history_line(console, "File already exists; use EDIT to replace it.");
+                return true;
+            }
+            const uint32_t content_length = bounded_string_length(content, kInputCapacity);
+            const uint8_t* data = content_length == 0 ? nullptr :
+                reinterpret_cast<const uint8_t*>(content);
+            if (content_length >= kInputCapacity ||
+                !annyos::storage::fat32_write_file(drive.volume, directory_cluster,
+                                                    filename, data, content_length)) {
+                add_history_line(console, "Create failed. Use a valid 8.3 name and writable volume.");
+            } else {
+                add_history_line(console, "File created.", g_prompt_color);
+            }
+            return true;
+        }
+        case Operation::edit:
+            if (*content != '\0') {
+                add_history_line(console, "Use EDIT <FILE> to open the editor; put text on following lines.");
+            } else {
+                begin_file_edit(console, drive.volume, directory_cluster, filename);
+            }
+            return true;
+        case Operation::read: {
+            if (*content != '\0') {
+                add_history_line(console, "Usage: READ <FILE>");
+                return true;
+            }
+            uint32_t bytes_read = 0;
+            if (read_text_file(console, drive.volume, directory_cluster, filename, &bytes_read)) {
+                if (!is_text_file(console.editor_buffer, bytes_read)) {
+                    add_history_line(console, "File contains binary data; text display is unavailable.");
+                } else {
+                    add_history_line(console, "FILE CONTENT", g_help_title_color, true);
+                    display_file_contents(console, console.editor_buffer, bytes_read);
+                }
+            }
+            return true;
+        }
+        case Operation::remove:
+            if (*content != '\0') {
+                add_history_line(console, "Usage: DELETE <FILE>");
+            } else if (annyos::storage::fat32_delete_file(
+                           drive.volume, directory_cluster, filename)) {
+                add_history_line(console, "File deleted.", g_prompt_color);
+            } else {
+                add_history_line(console, "Delete failed; file may be missing, read-only, or a folder.");
+            }
+            return true;
+    }
+    return true;
+}
+
 bool switch_drive(ConsoleState& console, DriveState* drives, WorkingDirectory* working_directory) {
     const char drive = uppercase(console.input[0]);
     if (console.input[1] != ':' || drive < 'C' || drive > 'F') return false;
@@ -1138,6 +1525,8 @@ void submit_command(ConsoleState& console, DriveState* drives,
             handle_configsave_command(console, "");
         } else if (command_starts_with(console.input, "configsave ")) {
             handle_configsave_command(console, console.input + 11);
+        } else if (handle_file_command(console, active_drive, *working_directory)) {
+            // File commands are handled against the active FAT32 directory.
         } else if (command_equals(console.input, "dir")) {
             if (!fat32_mounted) {
                 add_history_line(console, "FAT32 volume not found.");
@@ -1216,7 +1605,14 @@ void draw_prompt(const annyos::FramebufferInfo& fb, const ConsoleState& console,
     const int32_t y = kMargin + row * kLineHeight;
     fill_rect(fb, 0, y, static_cast<int32_t>(fb.width), kLineHeight, g_screen_color);
     const int32_t path_x = draw_text(fb, kMargin, y, working_directory.path, g_prompt_color);
-    const int32_t input_x = draw_text(fb, path_x, y, "> ", g_prompt_color);
+    int32_t input_x;
+    if (console.editor_active) {
+        const int32_t label_x = draw_text(fb, path_x, y, " EDIT ", g_prompt_color);
+        const int32_t name_x = draw_text(fb, label_x, y, console.editor_filename, g_prompt_color);
+        input_x = draw_text(fb, name_x, y, "> ", g_prompt_color);
+    } else {
+        input_x = draw_text(fb, path_x, y, "> ", g_prompt_color);
+    }
     const int32_t cursor_x = draw_text(fb, input_x, y, console.input, g_input_color);
     fill_rect(fb, cursor_x, y + 18, 8, 2, g_input_color);
 }
@@ -1333,7 +1729,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.0]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.1]");
         add_history_line(console, "Type HELP for commands.");
     }
     redraw_history(boot_info->framebuffer, console, working_directory);
@@ -1352,14 +1748,20 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
         }
 
         if (event.action == annyos::input::KeyAction::enter) {
-            submit_command(console, g_drives, &working_directory, api);
+            if (console.editor_active) {
+                submit_editor_line(console, g_drives[working_directory.drive_index], working_directory);
+            } else {
+                submit_command(console, g_drives, &working_directory, api);
+            }
             redraw_history(boot_info->framebuffer, console, working_directory);
         } else if (event.action == annyos::input::KeyAction::up ||
                    event.action == annyos::input::KeyAction::down) {
-            recall_command(console, event.action == annyos::input::KeyAction::up);
-            redraw_prompt(boot_info->framebuffer, console, working_directory);
+            if (!console.editor_active) {
+                recall_command(console, event.action == annyos::input::KeyAction::up);
+                redraw_prompt(boot_info->framebuffer, console, working_directory);
+            }
         } else if (event.action == annyos::input::KeyAction::backspace) {
-            console.command_history_cursor = console.command_history_count;
+            if (!console.editor_active) console.command_history_cursor = console.command_history_count;
             if (console.input_length > 0) console.input[--console.input_length] = '\0';
             redraw_prompt(boot_info->framebuffer, console, working_directory);
         } else if (event.action == annyos::input::KeyAction::character &&

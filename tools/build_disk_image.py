@@ -21,6 +21,8 @@ ALIASES = {
     "Segoe UI Italic.ttf": "SEGOEIT.TTF",
     "Segoe UI Bold Italic.ttf": "SEGOEBI.TTF",
 }
+MAX_PRESERVED_FILE_BYTES = 64 * 1024 * 1024
+MAX_PRESERVED_DIRECTORY_BYTES = 16 * 1024 * 1024
 
 
 def short_name(name: str) -> bytes:
@@ -44,98 +46,164 @@ def dir_entry(name: bytes, attr: int, cluster: int, size: int = 0) -> bytes:
     return bytes(entry)
 
 
-def existing_config(image_path: pathlib.Path) -> Optional[bytes]:
-    """Read the small persisted config file before rebuilding the disk image."""
+def existing_files(image_path: pathlib.Path) -> dict:
+    """Read the previous FAT32 tree so user files survive a rebuild."""
     if not image_path.is_file():
-        return None
+        return {}
     try:
         with image_path.open("rb") as image:
-            image.seek(0)
-            mbr = image.read(SECTOR)
-            if len(mbr) != SECTOR or mbr[510:512] != b"\x55\xaa":
-                return None
+            image_size = image_path.stat().st_size
+
+            def read_sector(lba: int) -> Optional[bytes]:
+                offset = lba * SECTOR
+                if offset < 0 or offset + SECTOR > image_size:
+                    return None
+                image.seek(offset)
+                data = image.read(SECTOR)
+                return data if len(data) == SECTOR else None
+
+            mbr = read_sector(0)
+            if mbr is None or mbr[510:512] != b"\x55\xaa":
+                return {}
             partition_lba = None
+            partition_size = 0
             for index in range(4):
                 entry = mbr[446 + index * 16:462 + index * 16]
-                if entry[4] in (0x0B, 0x0C, 0xEF):
+                if entry[4] in (0x0B, 0x0C, 0x0E, 0xEF):
                     partition_lba = struct.unpack_from("<I", entry, 8)[0]
+                    partition_size = struct.unpack_from("<I", entry, 12)[0]
                     break
-            if partition_lba is None:
-                return None
+            if partition_lba is None or partition_size == 0:
+                return {}
 
-            image.seek(partition_lba * SECTOR)
-            boot = image.read(SECTOR)
-            if len(boot) != SECTOR or boot[510:512] != b"\x55\xaa":
-                return None
+            boot = read_sector(partition_lba)
+            if boot is None or boot[510:512] != b"\x55\xaa":
+                return {}
             bytes_per_sector = struct.unpack_from("<H", boot, 11)[0]
             sectors_per_cluster = boot[13]
             reserved_sectors = struct.unpack_from("<H", boot, 14)[0]
             fat_count = boot[16]
+            total_sectors = (struct.unpack_from("<H", boot, 19)[0] or
+                             struct.unpack_from("<I", boot, 32)[0])
             sectors_per_fat = struct.unpack_from("<I", boot, 36)[0]
             root_cluster = struct.unpack_from("<I", boot, 44)[0] & 0x0FFFFFFF
             if (bytes_per_sector != SECTOR or sectors_per_cluster == 0 or
+                    sectors_per_cluster & (sectors_per_cluster - 1) or
                     reserved_sectors == 0 or fat_count == 0 or sectors_per_fat == 0 or
-                    root_cluster < 2):
-                return None
+                    total_sectors == 0 or total_sectors > partition_size or root_cluster < 2):
+                return {}
 
             fat_start = partition_lba + reserved_sectors
             data_start = fat_start + fat_count * sectors_per_fat
+            cluster_count = (total_sectors - reserved_sectors - fat_count * sectors_per_fat) // sectors_per_cluster
+            if cluster_count < 1 or root_cluster >= cluster_count + 2:
+                return {}
+            cluster_bytes = sectors_per_cluster * SECTOR
 
-            def next_cluster(cluster: int) -> int:
-                byte_offset = cluster * 4
-                image.seek((fat_start * SECTOR) + byte_offset)
-                raw = image.read(4)
-                if len(raw) != 4:
-                    return 0x0FFFFFFF
-                return struct.unpack("<I", raw)[0] & 0x0FFFFFFF
-
-            config_cluster = 0
-            config_size = 0
-            cluster = root_cluster
-            for _ in range(1_000_000):
-                offset = (data_start + (cluster - 2) * sectors_per_cluster) * SECTOR
-                image.seek(offset)
-                directory = image.read(sectors_per_cluster * SECTOR)
-                if len(directory) != sectors_per_cluster * SECTOR:
+            def fat_next(cluster: int) -> Optional[int]:
+                fat_sector = (cluster * 4) // SECTOR
+                if fat_sector >= sectors_per_fat:
                     return None
-                for entry_offset in range(0, len(directory), 32):
-                    item = directory[entry_offset:entry_offset + 32]
-                    if item[0] == 0:
+                raw = read_sector(fat_start + fat_sector)
+                if raw is None:
+                    return None
+                offset = (cluster * 4) % SECTOR
+                return struct.unpack_from("<I", raw, offset)[0] & 0x0FFFFFFF
+
+            def read_chain(first: int, byte_limit: int) -> Optional[bytes]:
+                if byte_limit == 0:
+                    return b""
+                if first < 2 or first >= cluster_count + 2:
+                    return None
+                output = bytearray()
+                cluster = first
+                visited = set()
+                for _ in range(cluster_count):
+                    if cluster < 2 or cluster >= cluster_count + 2 or cluster in visited:
                         return None
+                    visited.add(cluster)
+                    for sector_index in range(sectors_per_cluster):
+                        lba = data_start + (cluster - 2) * sectors_per_cluster + sector_index
+                        chunk = read_sector(lba)
+                        if chunk is None:
+                            return None
+                        output.extend(chunk)
+                        if len(output) >= byte_limit:
+                            return bytes(output[:byte_limit])
+                    following = fat_next(cluster)
+                    if following is None:
+                        return None
+                    if following >= 0x0FFFFFF8:
+                        return bytes(output)
+                    if following < 2 or following == 0x0FFFFFF7 or following >= cluster_count + 2:
+                        return None
+                    cluster = following
+                return None
+
+            def decode_name(raw: bytes) -> str:
+                base = raw[:8].decode("ascii", errors="replace").rstrip(" ")
+                extension = raw[8:11].decode("ascii", errors="replace").rstrip(" ")
+                return f"{base}.{extension}" if extension else base
+
+            visited_directories = set()
+
+            def read_directory(first: int, depth: int = 0) -> dict:
+                if depth > 32 or first in visited_directories:
+                    return {}
+                visited_directories.add(first)
+                data = read_chain(first, MAX_PRESERVED_DIRECTORY_BYTES)
+                if data is None:
+                    return {}
+                entries = {}
+                for offset in range(0, len(data) - 31, 32):
+                    item = data[offset:offset + 32]
+                    if item[0] == 0:
+                        break
                     if item[0] == 0xE5 or item[11] == 0x0F or item[11] & 0x08:
                         continue
-                    if item[:11] == b"ANNYOS  CFG" and not item[11] & 0x10:
-                        config_cluster = (struct.unpack_from("<H", item, 20)[0] << 16) | struct.unpack_from("<H", item, 26)[0]
-                        config_size = struct.unpack_from("<I", item, 28)[0]
-                        break
-                if config_cluster:
-                    break
-                cluster = next_cluster(cluster)
-                if cluster >= 0x0FFFFFF8 or cluster < 2:
-                    return None
+                    name = decode_name(item[:11])
+                    if name in (".", "..") or not name:
+                        continue
+                    cluster = ((struct.unpack_from("<H", item, 20)[0] << 16) |
+                               struct.unpack_from("<H", item, 26)[0])
+                    if item[11] & 0x10:
+                        entries[name] = read_directory(cluster, depth + 1) if cluster >= 2 else {}
+                        continue
+                    size = struct.unpack_from("<I", item, 28)[0]
+                    if size > MAX_PRESERVED_FILE_BYTES:
+                        continue
+                    contents = read_chain(cluster, size) if size else b""
+                    # Do not silently turn a damaged/truncated old file into a
+                    # shorter file when carrying it into the rebuilt image.
+                    if contents is not None and len(contents) == size:
+                        entries[name] = contents
+                return entries
 
-            if config_cluster < 2 or config_size == 0 or config_size > 4096:
-                return None
-            remaining = config_size
-            output = bytearray()
-            cluster = config_cluster
-            for _ in range(1_000_000):
-                offset = (data_start + (cluster - 2) * sectors_per_cluster) * SECTOR
-                image.seek(offset)
-                chunk = image.read(sectors_per_cluster * SECTOR)
-                if len(chunk) != sectors_per_cluster * SECTOR:
-                    return None
-                amount = min(remaining, len(chunk))
-                output.extend(chunk[:amount])
-                remaining -= amount
-                if remaining == 0:
-                    return bytes(output)
-                cluster = next_cluster(cluster)
-                if cluster >= 0x0FFFFFF8 or cluster < 2:
-                    return None
-    except (OSError, struct.error, OverflowError):
-        return None
-    return None
+            return read_directory(root_cluster)
+    except (OSError, struct.error, OverflowError, RecursionError):
+        return {}
+
+
+def merge_missing(generated: dict, previous: dict) -> int:
+    """Preserve old user entries while letting fresh build files take priority."""
+    preserved = 0
+    generated_names = {name.upper(): name for name in generated}
+    for old_name, old_value in previous.items():
+        current_name = generated_names.get(old_name.upper())
+        if current_name is None:
+            generated[old_name] = old_value
+            generated_names[old_name.upper()] = old_name
+            if isinstance(old_value, dict):
+                preserved += count_files(old_value)
+            else:
+                preserved += 1
+        elif isinstance(generated[current_name], dict) and isinstance(old_value, dict):
+            preserved += merge_missing(generated[current_name], old_value)
+    return preserved
+
+
+def count_files(tree: dict) -> int:
+    return sum(count_files(value) if isinstance(value, dict) else 1 for value in tree.values())
 
 
 def file_contents(value) -> bytes:
@@ -234,7 +302,7 @@ class Fat32Image:
                 child_cluster = self.allocate(content)
                 entries.append(dir_entry(encoded_name, 0x20, child_cluster, len(content)))
         entries.append(bytes(32))
-        self.write_cluster(cluster, b"".join(entries))
+        self.write_directory_payload(cluster, b"".join(entries))
         return cluster
 
     def write_cluster(self, cluster: int, data: bytes):
@@ -242,6 +310,28 @@ class Fat32Image:
         data = data.ljust(math.ceil(len(data) / size) * size, b"\0")
         self.file.seek((self.data_lba + cluster - 2) * SECTOR)
         self.file.write(data)
+
+    def write_directory_payload(self, first_cluster: int, payload: bytes):
+        cluster_bytes = SECTOR * SPC
+        required = max(1, math.ceil(len(payload) / cluster_bytes))
+        chain = []
+        cluster = first_cluster
+        while cluster < EOC:
+            if cluster < 2 or cluster >= len(self.fat) or cluster in chain:
+                raise ValueError("Invalid FAT32 directory cluster chain")
+            chain.append(cluster)
+            cluster = self.fat[cluster]
+        if len(chain) < required:
+            extra_count = required - len(chain)
+            extra_first = self.allocate(bytes(extra_count * cluster_bytes))
+            self.fat[chain[-1]] = extra_first
+            cluster = extra_first
+            for _ in range(extra_count):
+                chain.append(cluster)
+                cluster = self.fat[cluster]
+        padded = payload.ljust(len(chain) * cluster_bytes, b"\0")
+        for index, cluster in enumerate(chain):
+            self.write_cluster(cluster, padded[index * cluster_bytes:(index + 1) * cluster_bytes])
 
     def finish(self, root: dict):
         # Fill the preallocated root cluster, allocating another if needed.
@@ -257,9 +347,7 @@ class Fat32Image:
                 entries.append(dir_entry(encoded_name, 0x20, cluster, len(content)))
         entries.append(bytes(32))
         payload = b"".join(entries)
-        if len(payload) > SECTOR * SPC:
-            raise ValueError("FAT32 root directory exceeds its reserved cluster")
-        self.write_cluster(2, payload)
+        self.write_directory_payload(2, payload)
         fat_bytes = bytearray(self.fat_sectors * SECTOR)
         for index, value in enumerate(self.fat):
             struct.pack_into("<I", fat_bytes, index * 4, value)
@@ -290,13 +378,13 @@ def main() -> int:
     if not (esp / "EFI/BOOT/BOOTX64.EFI").is_file():
         raise SystemExit("ESP is missing EFI/BOOT/BOOTX64.EFI")
     root = directory_tree(esp)
-    saved_config = existing_config(output)
-    if saved_config is not None and "ANNYOS.CFG" not in root:
-        root["ANNYOS.CFG"] = saved_config
+    previous = existing_files(output)
+    preserved_count = merge_missing(root, previous)
     output.parent.mkdir(parents=True, exist_ok=True)
     image = Fat32Image(output)
     image.finish(root)
-    print(f"Built {output} ({IMAGE_SECTORS * SECTOR // (1024 * 1024)} MiB FAT32)")
+    suffix = f"; preserved {preserved_count} user files" if preserved_count else ""
+    print(f"Built {output} ({IMAGE_SECTORS * SECTOR // (1024 * 1024)} MiB FAT32{suffix})")
     return 0
 
 

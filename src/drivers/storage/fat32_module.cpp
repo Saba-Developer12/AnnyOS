@@ -38,3 +38,9 @@ extern "C" bool annyos_fat32_write_file(const annyos::storage::Fat32Volume* volu
     return volume != nullptr &&
            annyos::storage::fat32_write_file(*volume, directory_cluster, short_name, data, size);
 }
+
+extern "C" bool annyos_fat32_delete_file(const annyos::storage::Fat32Volume* volume,
+                                         uint32_t directory_cluster, const char* short_name) {
+    return volume != nullptr &&
+           annyos::storage::fat32_delete_file(*volume, directory_cluster, short_name);
+}

@@ -13,8 +13,8 @@ the framebuffer, CPU instructions, PS/2 ports, and legacy ATA PIO ports.
 
 The framebuffer renderer supports the GOP RGB, BGR, and bit-mask pixel formats.
 The kernel draws a blue, DOS-style command screen with a `C:\>` prompt and polls
-the legacy i8042 keyboard for set 1 scan codes. Kernel commands are `DIR`,
-`CD`, `CLS`, `ECHO`, and `COLOR`. `HELP`, `VER`, `MEM`, `DATE`, `TIME`,
+the legacy i8042 keyboard for set 1 scan codes. Kernel commands include `DIR`,
+`CD`, `CREATE`, `EDIT`, `READ`, `DELETE`, `CLS`, `ECHO`, and `COLOR`. `HELP`, `VER`, `MEM`, `DATE`, `TIME`,
 `REBOOT`, `SLEEP`, and `BEEP` run as `.AP` applications through the versioned
 API. Date and time read the CMOS RTC; sleep uses the PIT timer, beep uses the
 PC speaker, and reboot uses the keyboard controller.
@@ -30,7 +30,22 @@ legacy ATA PIO positions and assigns C: through F: to mounted FAT32 disks.
 `..`, `\`, and multi-level paths, and entering a drive name such as `D:` or
 `E:\APPS` switches drives. QEMU uses the `pc` machine model to expose IDE
 devices. USB mass storage is not supported yet because there is no USB host
-controller or mass-storage driver.
+controller or mass-storage driver. `CREATE`, `READ` (also `TYPE`), `EDIT`, and
+`DELETE` (also `DEL`) operate on FAT 8.3 files in the current directory.
+`CREATE NAME.TXT [TEXT]` creates an empty file or seeds it with one command
+line; `EDIT NAME.TXT` opens a line-oriented editor with a 4 KiB text buffer,
+`:REPLACE N TEXT`, `:DELETE N`, `:CLEAR`, `:SAVE`, and `:CANCEL` (line numbers
+start at 1). `READ` displays text files up to 4 KiB, and
+`DELETE` releases the file's FAT cluster chain. The FAT32 writer supports
+multi-cluster replacement and empty files; the current shell editor is bounded
+to 4 KiB and edits by line number rather than a movable cursor.
+`src/drivers/storage/ntfs.cpp` and `apfs.cpp` provide validated format probes
+for NTFS boot sectors and APFS container superblocks, and are packaged as
+`/DRIVER/NTFS.SYS` and `/DRIVER/APFS.SYS`. They identify matching disks during
+startup, but do not yet mount them or provide file operations; only FAT32 is
+currently mounted by the shell. APFS probing verifies the container block
+checksum, while NTFS probing validates its boot-sector geometry and MFT
+locations.
 The CLI loads version 1 `.AP` bytecode from its current FAT32 directory, then
 falls back to `/APPS`. It uses `fat32_find_file` and `fat32_read_file`, then
 validates the bounded 40-byte AP header, checksum, and instruction stream
@@ -40,11 +55,11 @@ banner and help text plus `HELP`, `VER`, `MEM`, `DATE`, `TIME`, `REBOOT`,
 are stored as AP applications under `/APPS`. AP is interpreted bytecode, not
 native x86: AnnyOS does not yet have paging, user mode, or process isolation.
 See `docs/AP_FORMAT.md`; the image also includes `/APPS/HELLO.AP` as a sample.
-The requested seven-format set is FAT12, FAT16, FAT32, exFAT, ext2, ISO9660,
-and UDF; FAT32 is the first implemented driver, with the remaining formats to
-follow as storage milestones. The initial keyboard path is polling only;
-interrupt-driven input, paging, persistent file operations, login, and userspace
-remain later milestones. Freestanding memory primitives live in
+FAT32 is the only mounted filesystem. NTFS and APFS have metadata probes but
+no file operations yet; FAT12, FAT16, exFAT, ext2, ISO9660, and UDF remain
+future storage milestones. The initial keyboard path is polling only;
+interrupt-driven input, paging, login, and userspace remain later milestones.
+Freestanding memory primitives live in
 `src/kernel/runtime.cpp` so Windows and Linux Clang builds can link without a
 hosted C runtime.
 

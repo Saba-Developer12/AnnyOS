@@ -13,6 +13,8 @@ clang++ "${COMMON[@]}" -c "$ROOT/src/boot/gop_helper.cpp" -o "$BUILD/obj/gop_hel
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/input/ps2_keyboard.cpp" -o "$BUILD/obj/ps2_keyboard.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/input/usb_hid.cpp" -o "$BUILD/obj/usb_hid.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/fat32.cpp" -o "$BUILD/obj/fat32.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ntfs.cpp" -o "$BUILD/obj/ntfs.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/apfs.cpp" -o "$BUILD/obj/apfs.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ata_pio.cpp" -o "$BUILD/obj/ata_pio.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/timer_pit.cpp" -o "$BUILD/obj/timer_pit.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/serial_com1.cpp" -o "$BUILD/obj/serial_com1.obj"
@@ -21,6 +23,8 @@ clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/ap_loader.cpp" -o "$BUILD/obj/ap_loa
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/config_save.cpp" -o "$BUILD/obj/config_save.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/driver_registry.cpp" -o "$BUILD/obj/driver_registry.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/fat32_module.cpp" -o "$BUILD/obj/fat32_module.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ntfs_module.cpp" -o "$BUILD/obj/ntfs_module.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/apfs_module.cpp" -o "$BUILD/obj/apfs_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/input/ps2kbd_module.cpp" -o "$BUILD/obj/ps2kbd_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/input/usbhid_module.cpp" -o "$BUILD/obj/usbhid_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/timer_module.cpp" -o "$BUILD/obj/timer_module.obj"
@@ -35,6 +39,7 @@ MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link \
   /dynamicbase /nxcompat /opt:ref /timestamp:0 "/out:$BUILD/esp/EFI/BOOT/BOOTX64.EFI" \
   "$BUILD/obj/efi_main.obj" "$BUILD/obj/gop_helper.obj" \
   "$BUILD/obj/ps2_keyboard.obj" "$BUILD/obj/fat32.obj" \
+  "$BUILD/obj/ntfs.obj" "$BUILD/obj/apfs.obj" \
   "$BUILD/obj/usb_hid.obj" \
   "$BUILD/obj/ata_pio.obj" "$BUILD/obj/timer_pit.obj" \
   "$BUILD/obj/serial_com1.obj" "$BUILD/obj/pc_speaker.obj" \
@@ -47,7 +52,14 @@ MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefault
   /dynamicbase /timestamp:0 /export:annyos_fat32_mount /export:annyos_fat32_list_root \
   /export:annyos_fat32_list_directory /export:annyos_fat32_find_file \
   /export:annyos_fat32_read_file /export:annyos_fat32_write_file \
+  /export:annyos_fat32_delete_file \
   "/out:$BUILD/fat32.sys" "$BUILD/obj/fat32.obj" "$BUILD/obj/fat32_module.obj"
+MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
+  /dynamicbase /timestamp:0 /export:annyos_ntfs_probe \
+  "/out:$BUILD/ntfs.sys" "$BUILD/obj/ntfs.obj" "$BUILD/obj/ntfs_module.obj"
+MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
+  /dynamicbase /timestamp:0 /export:annyos_apfs_probe \
+  "/out:$BUILD/apfs.sys" "$BUILD/obj/apfs.obj" "$BUILD/obj/apfs_module.obj"
 MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
   /dynamicbase /timestamp:0 /export:annyos_ata_pio_initialize /export:annyos_ata_pio_read_sector \
   /export:annyos_ata_pio_write_sector \
@@ -81,7 +93,8 @@ cp "$ROOT/font/segoe-ui/Segoe UI.ttf" "$ROOT/font/segoe-ui/Segoe UI Bold.ttf" \
   "$ROOT/font/segoe-ui/Segoe UI Italic.ttf" "$ROOT/font/segoe-ui/Segoe UI Bold Italic.ttf" \
   "$BUILD/esp/fonts/segoe-ui/"
 cp "$ROOT/font/segoe-ui/README.TXT" "$BUILD/esp/fonts/segoe-ui/"
-cp "$BUILD/ata.sys" "$BUILD/fat32.sys" "$BUILD/ps2kbd.sys" "$BUILD/usbhid.sys" \
+cp "$BUILD/ata.sys" "$BUILD/fat32.sys" "$BUILD/ntfs.sys" "$BUILD/apfs.sys" \
+  "$BUILD/ps2kbd.sys" "$BUILD/usbhid.sys" \
   "$BUILD/timer.sys" "$BUILD/serial.sys" "$BUILD/speaker.sys" "$BUILD/esp/driver/"
 mkdir -p "$BUILD/esp/apps"
 for source in "$ROOT"/apps/*.aadl; do
