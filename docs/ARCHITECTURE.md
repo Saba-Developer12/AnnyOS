@@ -34,12 +34,11 @@ devices. USB mass storage is not supported yet because there is no USB host
 controller or mass-storage driver. `CREATE`, `READ` (also `TYPE`), `EDIT`, and
 `DELETE` (also `DEL`) operate on FAT 8.3 files in the current directory.
 `CREATE NAME.TXT [TEXT]` creates an empty file or seeds it with one command
-line; `EDIT NAME.TXT` opens a line-oriented editor with a 4 KiB text buffer,
-`:REPLACE N TEXT`, `:DELETE N`, `:CLEAR`, `:SAVE`, and `:CANCEL` (line numbers
-start at 1). `READ` displays text files up to 4 KiB, and
+line; `EDIT NAME.TXT` opens a full-screen editor with a 4 KiB text buffer.
+Arrow keys move the caret, Enter inserts a newline, Backspace/Delete edit text,
+F2 saves, and Escape cancels. `READ` displays text files up to 4 KiB, and
 `DELETE` releases the file's FAT cluster chain. The FAT32 writer supports
-multi-cluster replacement and empty files; the current shell editor is bounded
-to 4 KiB and edits by line number rather than a movable cursor.
+multi-cluster replacement and empty files; the editor is bounded to 4 KiB.
 `src/drivers/storage/ntfs.cpp` and `apfs.cpp` provide validated format probes
 for NTFS boot sectors and APFS container superblocks, and are packaged as
 `/DRIVER/NTFS.SYS` and `/DRIVER/APFS.SYS`. They identify matching disks during

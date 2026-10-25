@@ -8,8 +8,15 @@ enum class KeyAction : uint8_t {
     character,
     enter,
     backspace,
+    delete_forward,
     up,
     down,
+    left,
+    right,
+    home,
+    end,
+    escape,
+    save,
 };
 
 struct KeyEvent {

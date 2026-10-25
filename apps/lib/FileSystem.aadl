@@ -3,7 +3,7 @@
 class FileSystem {
     method showCommands() {
         row("CREATE <FILE>", "Create empty file; add TEXT for initial contents");
-        row("EDIT <FILE>", "Edit lines with :REPLACE, :DELETE, and :SAVE");
+        row("EDIT <FILE>", "Arrows edit text; F2 saves, ESC cancels");
         row("READ <FILE>", "Display a text file in the current directory");
         row("DELETE <FILE>", "Delete a file and free its FAT32 clusters");
     }

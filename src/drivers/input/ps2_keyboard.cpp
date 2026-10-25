@@ -106,19 +106,33 @@ bool poll_ps2_keyboard(KeyEvent* event) {
         extended_scancode = false;
         const bool released = (code & 0x80) != 0;
         const uint8_t extended_key = code & 0x7f;
-        if (!released && extended_key == 0x48) {
-            event->action = KeyAction::up;
-            event->character = 0;
-            return true;
-        }
-        if (!released && extended_key == 0x50) {
-            event->action = KeyAction::down;
+        if (!released) {
+            switch (extended_key) {
+                case 0x48: event->action = KeyAction::up; break;
+                case 0x50: event->action = KeyAction::down; break;
+                case 0x4b: event->action = KeyAction::left; break;
+                case 0x4d: event->action = KeyAction::right; break;
+                case 0x47: event->action = KeyAction::home; break;
+                case 0x4f: event->action = KeyAction::end; break;
+                case 0x53: event->action = KeyAction::delete_forward; break;
+                default: return false;
+            }
             event->character = 0;
             return true;
         }
         return false;
     }
 
+    if (code == 0x01) {
+        event->action = KeyAction::escape;
+        event->character = 0;
+        return true;
+    }
+    if (code == 0x3c) {
+        event->action = KeyAction::save;
+        event->character = 0;
+        return true;
+    }
     const bool released = (code & 0x80) != 0;
     const uint8_t key = code & 0x7f;
     if (key == 0x2a) {

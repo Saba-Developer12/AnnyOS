@@ -55,6 +55,8 @@ struct ConsoleState {
     char editor_filename[13];
     uint8_t editor_buffer[kFileBufferCapacity];
     uint32_t editor_length;
+    uint32_t editor_cursor;
+    char editor_status[kLineCapacity];
 };
 
 struct WorkingDirectory {
@@ -439,7 +441,7 @@ void add_builtin_help(ConsoleState& console) {
     add_help_row(console, "CD [DIR|..|\\]", "Change directory");
     add_help_row(console, "C: THROUGH F:", "Switch to a mounted ATA drive");
     add_help_row(console, "CREATE <FILE>", "Create empty file or use CREATE <FILE> TEXT");
-    add_help_row(console, "EDIT <FILE>", "Edit lines with :REPLACE, :DELETE, :SAVE");
+    add_help_row(console, "EDIT <FILE>", "Arrows edit text; F2 saves, ESC cancels");
     add_help_row(console, "READ <FILE>", "Print a file's text contents");
     add_help_row(console, "DELETE <FILE>", "Delete a file and release its clusters");
     add_help_row(console, "CLS", "Clear the screen");
@@ -880,7 +882,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.2");
+            add_history_line(*state.console, "AnnyOS Version 0.4.3");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -1163,6 +1165,7 @@ void begin_file_edit(ConsoleState& console, const annyos::storage::Fat32Volume& 
                      uint32_t directory_cluster, const char* filename) {
     annyos::storage::Fat32DirectoryEntry entry{};
     console.editor_length = 0;
+    console.editor_cursor = 0;
     if (annyos::storage::fat32_find_file(volume, directory_cluster, filename, &entry)) {
         if (entry.size > kFileBufferCapacity) {
             add_history_line(console, "File is larger than the 4 KiB editor limit.");
@@ -1175,11 +1178,18 @@ void begin_file_edit(ConsoleState& console, const annyos::storage::Fat32Volume& 
             add_history_line(console, "File cannot be opened as editable text.");
             return;
         }
-        console.editor_length = bytes_read;
-        add_history_line(console, "Current file contents:", g_help_title_color, true);
-        display_file_contents(console, console.editor_buffer, console.editor_length);
+        uint32_t normalized_length = 0;
+        for (uint32_t index = 0; index < bytes_read; ++index) {
+            if (console.editor_buffer[index] == '\r') continue;
+            console.editor_buffer[normalized_length++] = console.editor_buffer[index];
+        }
+        console.editor_length = normalized_length;
+        console.editor_cursor = normalized_length;
+        const char loaded[] = "File loaded.";
+        append_text(console.editor_status, 0, sizeof(console.editor_status), loaded);
     } else {
-        add_history_line(console, "New file. Type lines, then enter :SAVE.", g_help_title_color);
+        const char created[] = "New file.";
+        append_text(console.editor_status, 0, sizeof(console.editor_status), created);
     }
 
     uint32_t index = 0;
@@ -1189,159 +1199,123 @@ void begin_file_edit(ConsoleState& console, const annyos::storage::Fat32Volume& 
     }
     console.editor_filename[index] = '\0';
     console.editor_active = true;
-    add_history_line(console, "Add lines; :REPLACE N TEXT, :DELETE N, :CLEAR, :SAVE, :CANCEL.");
 }
 
-bool editor_line_span(const ConsoleState& console, uint32_t requested_line,
-                      uint32_t* line_start, uint32_t* line_end,
-                      uint32_t* content_end) {
-    if (requested_line == 0 || line_start == nullptr || line_end == nullptr ||
-        content_end == nullptr) return false;
-    uint32_t current_line = 1;
-    uint32_t start = 0;
-    for (uint32_t index = 0; index <= console.editor_length; ++index) {
-        if (index != console.editor_length && console.editor_buffer[index] != '\n') continue;
-        if (current_line == requested_line) {
-            *line_start = start;
-            *content_end = index;
-            *line_end = index < console.editor_length ? index + 1 : index;
-            return true;
-        }
-        start = index + 1;
-        ++current_line;
-    }
-    return false;
+uint32_t editor_line_start(const ConsoleState& console, uint32_t position) {
+    uint32_t start = position > console.editor_length ? console.editor_length : position;
+    while (start > 0 && console.editor_buffer[start - 1] != '\n') --start;
+    return start;
 }
 
-bool parse_editor_line_command(const char* arguments, uint32_t* line_number,
-                               const char** replacement) {
-    if (arguments == nullptr || line_number == nullptr || replacement == nullptr) return false;
-    while (*arguments == ' ') ++arguments;
-    char digits[11];
-    uint32_t count = 0;
-    while (*arguments >= '0' && *arguments <= '9' && count + 1 < sizeof(digits)) {
-        digits[count++] = *arguments++;
-    }
-    if (count == 0 || (*arguments != '\0' && *arguments != ' ')) return false;
-    digits[count] = '\0';
-    uint32_t parsed = 0;
-    for (uint32_t index = 0; index < count; ++index) {
-        const uint32_t digit = static_cast<uint32_t>(digits[index] - '0');
-        if (parsed > (0xffffffffu - digit) / 10) return false;
-        parsed = parsed * 10 + digit;
-    }
-    *line_number = parsed;
-    while (*arguments == ' ') ++arguments;
-    *replacement = arguments;
-    return *line_number != 0;
+uint32_t editor_line_end(const ConsoleState& console, uint32_t position) {
+    uint32_t end = position > console.editor_length ? console.editor_length : position;
+    while (end < console.editor_length && console.editor_buffer[end] != '\n') ++end;
+    return end;
 }
 
-bool replace_editor_line(ConsoleState& console, uint32_t line_number,
-                         const char* replacement, bool delete_line) {
-    uint32_t start = 0;
-    uint32_t end = 0;
-    uint32_t content_end = 0;
-    if (!editor_line_span(console, line_number, &start, &end, &content_end)) return false;
-
-    const bool has_newline = end > content_end;
-    const uint32_t old_span = end - start;
-    const uint32_t replacement_length = delete_line
-        ? 0 : bounded_string_length(replacement, kLineCapacity);
-    if (replacement_length >= kLineCapacity) return false;
-    uint32_t new_span = replacement_length + (delete_line ? 0 : (has_newline ? 1 : 0));
-    if (delete_line && has_newline) new_span = 0;
-    if (delete_line && !has_newline) new_span = 0;
-
-    // A deleted line's newline is consumed with it. When deleting the final
-    // unterminated line, this simply removes the remaining bytes.
-    const uint32_t tail_start = end;
-    const uint32_t tail_length = console.editor_length - tail_start;
-    const uint32_t next_length = console.editor_length - old_span + new_span;
-    if (next_length > kFileBufferCapacity) return false;
-
-    const uint32_t new_tail_start = start + new_span;
-    if (new_tail_start > tail_start) {
-        for (uint32_t offset = tail_length; offset > 0; --offset) {
-            console.editor_buffer[new_tail_start + offset - 1] =
-                console.editor_buffer[tail_start + offset - 1];
-        }
-    } else if (new_tail_start < tail_start) {
-        for (uint32_t offset = 0; offset < tail_length; ++offset) {
-            console.editor_buffer[new_tail_start + offset] =
-                console.editor_buffer[tail_start + offset];
-        }
+void editor_insert(ConsoleState& console, uint8_t byte) {
+    if (console.editor_length >= kFileBufferCapacity) {
+        append_text(console.editor_status, 0, sizeof(console.editor_status), "Buffer full (4 KiB).");
+        return;
     }
-    for (uint32_t offset = 0; offset < replacement_length; ++offset) {
-        console.editor_buffer[start + offset] = static_cast<uint8_t>(replacement[offset]);
+    for (uint32_t index = console.editor_length; index > console.editor_cursor; --index) {
+        console.editor_buffer[index] = console.editor_buffer[index - 1];
     }
-    if (!delete_line && has_newline) {
-        console.editor_buffer[start + replacement_length] = '\n';
-    }
-    console.editor_length = next_length;
-    return true;
+    console.editor_buffer[console.editor_cursor++] = byte;
+    ++console.editor_length;
+    console.editor_status[0] = '\0';
 }
 
-void submit_editor_line(ConsoleState& console, DriveState& drive,
-                        const WorkingDirectory& working_directory) {
-    char prompt_line[kLineCapacity] = "EDIT ";
-    uint32_t prompt_length = append_text(prompt_line, 5, sizeof(prompt_line),
-                                         console.editor_filename);
-    prompt_length = append_text(prompt_line, prompt_length, sizeof(prompt_line), "> ");
-    append_text(prompt_line, prompt_length, sizeof(prompt_line), console.input);
-    add_history_line(console, prompt_line, g_prompt_color);
+void editor_erase(ConsoleState& console, uint32_t position) {
+    if (position >= console.editor_length) return;
+    for (uint32_t index = position; index + 1 < console.editor_length; ++index) {
+        console.editor_buffer[index] = console.editor_buffer[index + 1];
+    }
+    --console.editor_length;
+    if (console.editor_cursor > position) --console.editor_cursor;
+    console.editor_status[0] = '\0';
+}
 
-    if (command_equals(console.input, ":cancel")) {
-        console.editor_active = false;
-        add_history_line(console, "Edit cancelled.");
-    } else if (command_equals(console.input, ":clear")) {
-        console.editor_length = 0;
-        add_history_line(console, "Editor buffer cleared.", g_prompt_color);
-    } else if (command_starts_with(console.input, ":replace ")) {
-        uint32_t line_number = 0;
-        const char* replacement = nullptr;
-        if (!parse_editor_line_command(console.input + 9, &line_number, &replacement) ||
-            !replace_editor_line(console, line_number, replacement, false)) {
-            add_history_line(console, "Usage: :REPLACE <LINE> <TEXT> (line numbers start at 1)");
-        } else {
-            add_history_line(console, "Line replaced.", g_prompt_color);
-        }
-    } else if (command_starts_with(console.input, ":delete ")) {
-        uint32_t line_number = 0;
-        const char* unused_text = nullptr;
-        if (!parse_editor_line_command(console.input + 8, &line_number, &unused_text) ||
-            *unused_text != '\0' || !replace_editor_line(console, line_number, "", true)) {
-            add_history_line(console, "Usage: :DELETE <LINE> (line numbers start at 1)");
-        } else {
-            add_history_line(console, "Line deleted.", g_prompt_color);
-        }
-    } else if (command_equals(console.input, ":save")) {
+void editor_move_vertical(ConsoleState& console, bool down) {
+    const uint32_t start = editor_line_start(console, console.editor_cursor);
+    const uint32_t end = editor_line_end(console, console.editor_cursor);
+    const uint32_t column = console.editor_cursor - start;
+    uint32_t target_start;
+    uint32_t target_end;
+    if (down) {
+        if (end >= console.editor_length) return;
+        target_start = end + 1;
+        target_end = editor_line_end(console, target_start);
+    } else {
+        if (start == 0) return;
+        target_end = start - 1;
+        target_start = editor_line_start(console, target_end);
+    }
+    const uint32_t target_length = target_end - target_start;
+    console.editor_cursor = target_start + (column < target_length ? column : target_length);
+}
+
+void finish_file_edit(ConsoleState& console, DriveState& drive,
+                      const WorkingDirectory& working_directory, bool save) {
+    if (save) {
         const uint8_t* data = console.editor_length == 0 ? nullptr : console.editor_buffer;
-        if (annyos::storage::fat32_write_file(
+        if (!annyos::storage::fat32_write_file(
                 drive.volume, working_directory.cluster_stack[working_directory.depth],
                 console.editor_filename, data, console.editor_length)) {
-            console.editor_active = false;
-            add_history_line(console, "File saved.", g_prompt_color);
-        } else {
-            add_history_line(console, "Save failed; edit buffer is still available.");
+            append_text(console.editor_status, 0, sizeof(console.editor_status), "Save failed; keep editing.");
+            return;
         }
+        add_history_line(console, "File saved.", g_prompt_color);
     } else {
-        const uint32_t line_length = console.input_length;
-        const uint32_t separator = console.editor_length != 0 &&
-            console.editor_buffer[console.editor_length - 1] != '\n' ? 1 : 0;
-        if (line_length + separator + 1 > kFileBufferCapacity - console.editor_length) {
-            add_history_line(console, "Editor limit reached (4 KiB); save or clear the buffer.");
-        } else {
-            if (separator != 0) console.editor_buffer[console.editor_length++] = '\n';
-            for (uint32_t index = 0; index < line_length; ++index) {
-                console.editor_buffer[console.editor_length++] =
-                    static_cast<uint8_t>(console.input[index]);
-            }
-            console.editor_buffer[console.editor_length++] = '\n';
-            add_history_line(console, "Line added.");
-        }
+        add_history_line(console, "Edit cancelled.");
     }
-    console.input_length = 0;
-    console.input[0] = '\0';
+    console.editor_active = false;
+    console.editor_status[0] = '\0';
+}
+
+void handle_editor_event(ConsoleState& console, DriveState& drive,
+                         const WorkingDirectory& working_directory,
+                         const annyos::input::KeyEvent& event) {
+    switch (event.action) {
+        case annyos::input::KeyAction::character:
+            if (event.character >= 32 && event.character <= 126) {
+                editor_insert(console, static_cast<uint8_t>(event.character));
+            }
+            break;
+        case annyos::input::KeyAction::enter:
+            editor_insert(console, '\n');
+            break;
+        case annyos::input::KeyAction::backspace:
+            if (console.editor_cursor > 0) editor_erase(console, console.editor_cursor - 1);
+            break;
+        case annyos::input::KeyAction::delete_forward:
+            editor_erase(console, console.editor_cursor);
+            break;
+        case annyos::input::KeyAction::left:
+            if (console.editor_cursor > 0) --console.editor_cursor;
+            break;
+        case annyos::input::KeyAction::right:
+            if (console.editor_cursor < console.editor_length) ++console.editor_cursor;
+            break;
+        case annyos::input::KeyAction::up:
+            editor_move_vertical(console, false);
+            break;
+        case annyos::input::KeyAction::down:
+            editor_move_vertical(console, true);
+            break;
+        case annyos::input::KeyAction::home:
+            console.editor_cursor = editor_line_start(console, console.editor_cursor);
+            break;
+        case annyos::input::KeyAction::end:
+            console.editor_cursor = editor_line_end(console, console.editor_cursor);
+            break;
+        case annyos::input::KeyAction::save:
+            finish_file_edit(console, drive, working_directory, true);
+            break;
+        case annyos::input::KeyAction::escape:
+            finish_file_edit(console, drive, working_directory, false);
+            break;
+    }
 }
 
 bool handle_file_command(ConsoleState& console, DriveState& drive,
@@ -1622,25 +1596,108 @@ int32_t visible_rows(const annyos::FramebufferInfo& fb) {
     return rows > 1 ? rows : 1;
 }
 
+void draw_editor(const annyos::FramebufferInfo& fb, const ConsoleState& console) {
+    const int32_t width = static_cast<int32_t>(fb.width);
+    const int32_t height = static_cast<int32_t>(fb.height);
+    const Color header_color{0, 0, 96};
+    fill_rect(fb, 0, 0, width, height, g_screen_color);
+    fill_rect(fb, 0, 0, width, 48, header_color);
+    fill_rect(fb, 0, height - 52, width, 52, header_color);
+    draw_text(fb, kMargin, 12, "ANNYOS TEXT EDITOR", g_help_title_color, true);
+    const int32_t filename_x = draw_text(fb, kMargin + 225, 12, console.editor_filename,
+                                         g_input_color, true);
+    char size_text[32] = "  ";
+    uint32_t size_length = 2;
+    append_decimal(size_text, &size_length, console.editor_length);
+    append_text(size_text, size_length, sizeof(size_text), " / 4096 bytes");
+    draw_text(fb, filename_x + 12, 12, size_text, g_text_color);
+
+    const int32_t body_top = 60;
+    const int32_t footer_top = height - 52;
+    const int32_t body_height = footer_top - body_top;
+    const int32_t rows = body_height / kLineHeight > 0 ? body_height / kLineHeight : 1;
+    uint32_t cursor_line = 0;
+    for (uint32_t index = 0; index < console.editor_cursor; ++index) {
+        if (console.editor_buffer[index] == '\n') ++cursor_line;
+    }
+    const uint32_t first_line = cursor_line >= static_cast<uint32_t>(rows)
+        ? cursor_line - static_cast<uint32_t>(rows) + 1 : 0;
+    uint32_t line_number = 0;
+    uint32_t line_start = 0;
+    int32_t row = 0;
+    while (line_start <= console.editor_length && row < rows) {
+        const uint32_t line_end = editor_line_end(console, line_start);
+        if (line_number >= first_line) {
+            const int32_t y = body_top + row * kLineHeight;
+            char number[12] = "";
+            uint32_t number_length = 0;
+            append_decimal(number, &number_length, line_number + 1);
+            draw_text(fb, kMargin, y, number, g_prompt_color);
+
+            uint32_t visible_start = line_start;
+            if (line_number == cursor_line) {
+                const uint32_t cursor_column = console.editor_cursor - line_start;
+                const uint32_t horizontal_offset = cursor_column >= kInputCapacity - 4
+                    ? cursor_column - (kInputCapacity - 5) : 0;
+                visible_start += horizontal_offset;
+            }
+            char visible[kInputCapacity] = "";
+            char cursor_prefix[kInputCapacity] = "";
+            uint32_t visible_length = 0;
+            uint32_t prefix_length = 0;
+            for (uint32_t index = visible_start;
+                 index < line_end && visible_length + 1 < sizeof(visible); ++index) {
+                const char character = console.editor_buffer[index] == '\t'
+                    ? ' ' : static_cast<char>(console.editor_buffer[index]);
+                visible[visible_length++] = character;
+                if (line_number == cursor_line && index < console.editor_cursor) {
+                    cursor_prefix[prefix_length++] = character;
+                }
+            }
+            visible[visible_length] = '\0';
+            cursor_prefix[prefix_length] = '\0';
+            const int32_t text_x = kMargin + 38;
+            draw_text(fb, text_x, y, visible, g_text_color);
+            if (line_number == cursor_line) {
+                const int32_t cursor_x = text_x + measure_text(cursor_prefix);
+                fill_rect(fb, cursor_x, y + 18, 8, 2, g_input_color);
+            }
+            ++row;
+        }
+        if (line_end == console.editor_length) break;
+        line_start = line_end + 1;
+        ++line_number;
+    }
+
+    draw_text(fb, kMargin, footer_top + 5,
+              "F2 Save     ESC Cancel     Arrows Move     HOME/END Line",
+              g_prompt_color, true);
+    draw_text(fb, kMargin, footer_top + 27,
+              "ENTER New line     BACKSPACE/Delete Edit text",
+              g_text_color);
+    if (console.editor_status[0] != '\0') {
+        const int32_t status_x = measure_text("F2 Save     ESC Cancel     Arrows Move     HOME/END Line") +
+                                 2 * kMargin;
+        draw_text(fb, status_x, footer_top + 5, console.editor_status, g_help_title_color);
+    }
+}
+
 void draw_prompt(const annyos::FramebufferInfo& fb, const ConsoleState& console,
                  const WorkingDirectory& working_directory, int32_t row) {
     const int32_t y = kMargin + row * kLineHeight;
     fill_rect(fb, 0, y, static_cast<int32_t>(fb.width), kLineHeight, g_screen_color);
     const int32_t path_x = draw_text(fb, kMargin, y, working_directory.path, g_prompt_color);
-    int32_t input_x;
-    if (console.editor_active) {
-        const int32_t label_x = draw_text(fb, path_x, y, " EDIT ", g_prompt_color);
-        const int32_t name_x = draw_text(fb, label_x, y, console.editor_filename, g_prompt_color);
-        input_x = draw_text(fb, name_x, y, "> ", g_prompt_color);
-    } else {
-        input_x = draw_text(fb, path_x, y, "> ", g_prompt_color);
-    }
+    const int32_t input_x = draw_text(fb, path_x, y, "> ", g_prompt_color);
     const int32_t cursor_x = draw_text(fb, input_x, y, console.input, g_input_color);
     fill_rect(fb, cursor_x, y + 18, 8, 2, g_input_color);
 }
 
 void redraw_history(const annyos::FramebufferInfo& fb, const ConsoleState& console,
                     const WorkingDirectory& working_directory) {
+    if (console.editor_active) {
+        draw_editor(fb, console);
+        return;
+    }
     const int32_t rows = visible_rows(fb);
     fill_rect(fb, 0, 0, static_cast<int32_t>(fb.width), static_cast<int32_t>(fb.height), g_screen_color);
     const int32_t history_rows = rows - 1;
@@ -1696,6 +1753,10 @@ void redraw_history(const annyos::FramebufferInfo& fb, const ConsoleState& conso
 
 void redraw_prompt(const annyos::FramebufferInfo& fb, const ConsoleState& console,
                    const WorkingDirectory& working_directory) {
+    if (console.editor_active) {
+        draw_editor(fb, console);
+        return;
+    }
     const int32_t history_rows = visible_rows(fb) - 1;
     const uint32_t visible_history = console.history_count < static_cast<uint32_t>(history_rows)
         ? console.history_count : static_cast<uint32_t>(history_rows);
@@ -1751,7 +1812,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.2]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.3]");
         add_history_line(console, "Type HELP for commands.");
     }
     redraw_history(boot_info->framebuffer, console, working_directory);
@@ -1769,21 +1830,26 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
             continue;
         }
 
-        if (event.action == annyos::input::KeyAction::enter) {
+        if (console.editor_active) {
+            handle_editor_event(console, g_drives[working_directory.drive_index],
+                                working_directory, event);
             if (console.editor_active) {
-                submit_editor_line(console, g_drives[working_directory.drive_index], working_directory);
+                draw_editor(boot_info->framebuffer, console);
             } else {
-                submit_command(console, g_drives, &working_directory, api);
+                redraw_history(boot_info->framebuffer, console, working_directory);
             }
+            continue;
+        }
+
+        if (event.action == annyos::input::KeyAction::enter) {
+            submit_command(console, g_drives, &working_directory, api);
             redraw_history(boot_info->framebuffer, console, working_directory);
         } else if (event.action == annyos::input::KeyAction::up ||
                    event.action == annyos::input::KeyAction::down) {
-            if (!console.editor_active) {
-                recall_command(console, event.action == annyos::input::KeyAction::up);
-                redraw_prompt(boot_info->framebuffer, console, working_directory);
-            }
+            recall_command(console, event.action == annyos::input::KeyAction::up);
+            redraw_prompt(boot_info->framebuffer, console, working_directory);
         } else if (event.action == annyos::input::KeyAction::backspace) {
-            if (!console.editor_active) console.command_history_cursor = console.command_history_count;
+            console.command_history_cursor = console.command_history_count;
             if (console.input_length > 0) console.input[--console.input_length] = '\0';
             redraw_prompt(boot_info->framebuffer, console, working_directory);
         } else if (event.action == annyos::input::KeyAction::character &&
