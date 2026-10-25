@@ -25,8 +25,7 @@ $args = @(
     '-drive', "if=pflash,format=raw,readonly=on,file=$Firmware",
     '-drive', "if=ide,index=0,format=raw,file=$imagePath",
     '-serial', "file:$serialLog",
-    '-global', 'isa-debugcon.iobase=0xe9', '-debugcon', "file:$log",
-    '-no-reboot', '-no-shutdown'
+    '-global', 'isa-debugcon.iobase=0xe9', '-debugcon', "file:$log"
 )
 if ($Headless) { $args += @('-display', 'none', '-serial', 'none') }
 & $qemu @args

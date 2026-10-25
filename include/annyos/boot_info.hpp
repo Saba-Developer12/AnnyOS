@@ -4,6 +4,12 @@
 
 namespace annyos {
 
+// UEFI x64 uses the Microsoft ABI even though the kernel is built as
+// freestanding C++. Keep the runtime reset entry point across ExitBootServices
+// so the kernel can request a firmware-managed platform reset.
+using UefiResetSystem = void (__attribute__((ms_abi)) *)(
+    uint32_t reset_type, uint64_t reset_status, uintptr_t data_size, void* reset_data);
+
 enum class PixelFormat : uint32_t {
     rgb_reserved_8 = 0,
     bgr_reserved_8 = 1,
@@ -46,6 +52,7 @@ struct BootInfo {
     uint64_t memory_map_size;
     uint64_t memory_descriptor_size;
     uint32_t memory_descriptor_version;
+    UefiResetSystem reset_system;
 };
 
 } // namespace annyos

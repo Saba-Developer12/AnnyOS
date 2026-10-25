@@ -38,5 +38,4 @@ fi
 "$QEMU" -machine pc -m 512M -smp 2 -drive "if=pflash,format=raw,readonly=on,file=$FIRMWARE" \
   -drive "$DISK" \
   -serial "file:$ROOT/build/serial.log" \
-  -global isa-debugcon.iobase=0xe9 -debugcon "file:$ROOT/build/qemu-debug.log" \
-  -no-reboot -no-shutdown "$@"
+  -global isa-debugcon.iobase=0xe9 -debugcon "file:$ROOT/build/qemu-debug.log" "$@"

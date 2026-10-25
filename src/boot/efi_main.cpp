@@ -29,6 +29,9 @@ extern "C" EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE*
     annyos::boot::debug_write("AnnyOS: UEFI loader started\r\n");
 
     annyos::BootInfo boot_info{};
+    if (system_table->runtime_services != nullptr) {
+        boot_info.reset_system = system_table->runtime_services->reset_system;
+    }
     if (!annyos::boot::find_framebuffer(services, &boot_info.framebuffer)) {
         console_write(system_table, u"AnnyOS: GOP framebuffer unavailable\r\n");
         annyos::boot::debug_write("AnnyOS: ERROR GOP framebuffer unavailable\r\n");

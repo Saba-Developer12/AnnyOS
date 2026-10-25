@@ -644,14 +644,36 @@ void set_console_color(ConsoleState& console, const char* name) {
         : "Console theme applied and saved.", g_prompt_color);
 }
 
-[[noreturn]] void reboot_system() {
+[[noreturn]] void reboot_system(const annyos::BootInfo& boot_info) {
+    __asm__ volatile("cli" : : : "memory");
+    // ResetSystem is a UEFI Runtime Service and remains valid after
+    // ExitBootServices. A conforming implementation does not return.
+    if (boot_info.reset_system != nullptr) {
+        boot_info.reset_system(0, 0, 0, nullptr); // EfiResetCold, EFI_SUCCESS.
+        boot_info.reset_system(1, 0, 0, nullptr); // EfiResetWarm fallback.
+    }
+
+    // Common PC chipset reset-control register. Do not spin waiting on a
+    // device that may be absent or wedged.
+    __asm__ volatile("outb %0, %w1" : : "a"(static_cast<uint8_t>(0x02)), "Nd"(0x0cf9));
+    __asm__ volatile("outb %0, %w1" : : "a"(static_cast<uint8_t>(0x06)), "Nd"(0x0cf9));
+
+    // Legacy i8042 reset as a final hardware fallback.
     uint32_t retries = 100000;
-    while (retries > 0 && ([]() {
+    while (retries-- != 0) {
         uint8_t status;
-        __asm__ volatile("inb $0x64, %0" : "=a"(status));
-        return status;
-    }() & 0x02) != 0) --retries;
-    __asm__ volatile("outb %0, $0x64" : : "a"(static_cast<uint8_t>(0xFE)));
+        __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"(0x64));
+        if ((status & 0x02u) == 0) {
+            __asm__ volatile("outb %0, %1" : : "a"(static_cast<uint8_t>(0xfe)), "Nd"(0x64));
+            break;
+        }
+        __asm__ volatile("pause");
+    }
+
+    // If the platform has none of the reset mechanisms above, deliberately
+    // triple-fault rather than leaving a nonresponsive shell running.
+    struct __attribute__((packed)) EmptyIdt { uint16_t limit; uint64_t base; } empty_idt{0, 0};
+    __asm__ volatile("lidt %0; int3" : : "m"(empty_idt) : "memory");
     for (;;) __asm__ volatile("cli; hlt" : : : "memory");
 }
 
@@ -858,7 +880,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.1");
+            add_history_line(*state.console, "AnnyOS Version 0.4.2");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -873,7 +895,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
             add_history_line(*state.console, "Restarting AnnyOS...", g_prompt_color);
             redraw_history(*state.framebuffer, *state.console, *state.working_directory);
             debug_write("AnnyOS: reboot requested\r\n");
-            reboot_system();
+            reboot_system(*state.boot_info);
         case annyos::api::Service::sleep:
             if (!annyos::timer::sleep_ms(500)) {
                 add_history_line(*state.console, "PIT timer is unavailable.");
@@ -1729,7 +1751,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.1]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.2]");
         add_history_line(console, "Type HELP for commands.");
     }
     redraw_history(boot_info->framebuffer, console, working_directory);

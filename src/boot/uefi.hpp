@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 #include "annyos/boot_info.hpp"
 
@@ -74,6 +75,24 @@ using EFI_GET_MEMORY_MAP = EFI_STATUS (EFIAPI *)(EFI_UINTN*, void*, EFI_UINTN*, 
 using EFI_ALLOCATE_POOL = EFI_STATUS (EFIAPI *)(uint32_t, EFI_UINTN, void**);
 using EFI_EXIT_BOOT_SERVICES = EFI_STATUS (EFIAPI *)(EFI_HANDLE, EFI_UINTN);
 using EFI_LOCATE_PROTOCOL = EFI_STATUS (EFIAPI *)(EFI_GUID*, void*, void**);
+using EFI_RESET_SYSTEM = void (EFIAPI *)(uint32_t, EFI_STATUS, EFI_UINTN, void*);
+
+struct EFI_RUNTIME_SERVICES {
+    EFI_TABLE_HEADER header;
+    void* get_time;
+    void* set_time;
+    void* get_wakeup_time;
+    void* set_wakeup_time;
+    void* set_virtual_address_map;
+    void* convert_pointer;
+    void* get_variable;
+    void* get_next_variable_name;
+    void* set_variable;
+    void* get_next_high_monotonic_count;
+    EFI_RESET_SYSTEM reset_system;
+};
+static_assert(offsetof(EFI_RUNTIME_SERVICES, reset_system) == 104,
+              "UEFI runtime service table layout changed");
 
 struct EFI_BOOT_SERVICES {
     EFI_TABLE_HEADER header;
@@ -127,7 +146,7 @@ struct EFI_SYSTEM_TABLE {
     EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* console_out;
     EFI_HANDLE standard_error_handle;
     void* standard_error;
-    void* runtime_services;
+    EFI_RUNTIME_SERVICES* runtime_services;
     EFI_BOOT_SERVICES* boot_services;
 };
 

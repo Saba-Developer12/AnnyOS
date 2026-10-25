@@ -17,7 +17,8 @@ the legacy i8042 keyboard for set 1 scan codes. Kernel commands include `DIR`,
 `CD`, `CREATE`, `EDIT`, `READ`, `DELETE`, `CLS`, `ECHO`, and `COLOR`. `HELP`, `VER`, `MEM`, `DATE`, `TIME`,
 `REBOOT`, `SLEEP`, and `BEEP` run as `.AP` applications through the versioned
 API. Date and time read the CMOS RTC; sleep uses the PIT timer, beep uses the
-PC speaker, and reboot uses the keyboard controller.
+PC speaker, and reboot calls the UEFI Runtime `ResetSystem` service with chipset
+and i8042 reset fallbacks.
 Keyboard initialization discards scan codes left over from firmware, and
 editing redraws the prompt directly after the visible command history.
 
