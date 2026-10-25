@@ -14,13 +14,22 @@ the framebuffer, CPU instructions, PS/2 ports, and legacy ATA PIO ports.
 The framebuffer renderer supports the GOP RGB, BGR, and bit-mask pixel formats.
 The kernel draws a blue, DOS-style command screen with a `C:\>` prompt and polls
 the legacy i8042 keyboard for set 1 scan codes. Kernel commands include `DIR`,
-`CD`, `CREATE`, `EDIT`, `READ`, `DELETE`, `CLS`, `ECHO`, and `COLOR`. `HELP`, `VER`, `MEM`, `DATE`, `TIME`,
+`CD`, `CREATE`, `READ`, `DELETE`, `CLS`, `ECHO`, and `COLOR`. `EDIT` is a
+compiled `.AP` application that calls the bounded kernel editor service. `HELP`, `VER`, `MEM`, `DATE`, `TIME`,
 `REBOOT`, `SLEEP`, and `BEEP` run as `.AP` applications through the versioned
 API. Date and time read the CMOS RTC; sleep uses the PIT timer, beep uses the
 PC speaker, and reboot calls the UEFI Runtime `ResetSystem` service with chipset
 and i8042 reset fallbacks.
 Keyboard initialization discards scan codes left over from firmware, and
 editing redraws the prompt directly after the visible command history.
+
+The shell implementation is split by responsibility. `src/kernel/main.cpp`
+owns kernel startup, built-in service dispatch, and the input loop.
+`src/kernel/shell.cpp` contains bounded command-history and string helpers;
+`src/kernel/shell_files.cpp` handles FAT32 text-file commands and editor input;
+`src/kernel/shell_ui.cpp` owns font rasterization and framebuffer rendering.
+Their shared, private state contract is `src/kernel/shell_state.hpp`. Both
+Windows PowerShell and POSIX build scripts compile and link these modules.
 
 The first hand-written filesystem driver is FAT32 (`src/drivers/storage/fat32.cpp`).
 It validates a FAT32 volume on a 512-byte block device and enumerates the root
@@ -31,10 +40,16 @@ legacy ATA PIO positions and assigns C: through F: to mounted FAT32 disks.
 `..`, `\`, and multi-level paths, and entering a drive name such as `D:` or
 `E:\APPS` switches drives. QEMU uses the `pc` machine model to expose IDE
 devices. USB mass storage is not supported yet because there is no USB host
-controller or mass-storage driver. `CREATE`, `READ` (also `TYPE`), `EDIT`, and
+controller or mass-storage driver. Disk listing, disk information, and FAT32
+space queries remain available to AADL applications through
+`apps/lib/DiskManagement.aadl`; the shell has no built-in `DISK` command. A
+plugged USB flash drive is not listed until USB mass-storage support is
+implemented. `CREATE`, `READ`
+(also `TYPE`), `EDIT`, and
 `DELETE` (also `DEL`) operate on FAT 8.3 files in the current directory.
 `CREATE NAME.TXT [TEXT]` creates an empty file or seeds it with one command
-line; `EDIT NAME.TXT` opens a full-screen editor with a 4 KiB text buffer.
+line; the `EDIT.AP` application routes `EDIT NAME.TXT` to a full-screen editor
+with a 4 KiB text buffer.
 Arrow keys move the caret, Enter inserts a newline, Backspace/Delete edit text,
 F2 saves, and Escape cancels. `READ` displays text files up to 4 KiB, and
 `DELETE` releases the file's FAT cluster chain. The FAT32 writer supports

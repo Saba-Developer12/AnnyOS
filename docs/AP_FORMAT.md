@@ -70,10 +70,11 @@ search `/APPS` automatically, so `HELP`, `VER`, `DATE`, `TIME`, `MEM`,
 processor accepts FAT 8.3 filenames and passes up to eight arguments to the
 application. Arguments may be quoted with single or double quotes to include
 spaces. In AADL, `arg(0);` prints the first argument; indexes are zero-based
-and limited to `0` through `7`. The shell also implements built-in FAT32 file
-commands: `CREATE`, `EDIT`, `READ`/`TYPE`, and `DELETE`/`DEL`. Help rows for
-these commands are defined in `apps/lib/FileSystem.aadl`. AP v1 applications
-can display those help rows but do not receive unrestricted filesystem access.
+and limited to `0` through `7`. FAT32 file commands include `CREATE`, `EDIT`,
+`READ`/`TYPE`, and `DELETE`/`DEL`. `EDIT` is compiled from `apps/EDIT.aadl` to
+`EDIT.AP` and opens the kernel's bounded editor through `UI_OPEN_EDITOR`; other
+file operations use the corresponding bounded API services. Help rows are
+defined in `apps/lib/FileSystem.aadl`.
 
 The filesystem path is `fat32_find_file` followed by bounded
 `fat32_read_file`. The CLI loads the file into a fixed 64 KiB kernel buffer,

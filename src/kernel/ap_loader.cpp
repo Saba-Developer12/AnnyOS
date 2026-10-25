@@ -45,7 +45,7 @@ ApResult process_program(const uint8_t* code, uint32_t code_size,
             if (offset >= code_size) return ApResult::invalid_program;
             const uint8_t service = code[offset++];
             if (service < static_cast<uint8_t>(annyos::api::Service::version) ||
-                service > static_cast<uint8_t>(annyos::api::Service::time_get_rtc)) {
+                service > static_cast<uint8_t>(annyos::api::Service::disk_use)) {
                 return ApResult::invalid_program;
             }
             const uint32_t service_api_version = service >=

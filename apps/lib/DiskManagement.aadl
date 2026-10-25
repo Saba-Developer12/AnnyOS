@@ -1,0 +1,6 @@
+class DiskManagementApi {
+    method list() { api(DISK_LIST); }
+    method info() { api(DISK_INFO); }
+    method freeSpace() { api(DISK_SPACE); }
+    method useDrive() { api(DISK_USE); }
+}

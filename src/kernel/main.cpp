@@ -7,67 +7,23 @@
 #include "annyos/driver_services.hpp"
 #include "annyos/apfs.hpp"
 #include "annyos/fat32.hpp"
-#include "annyos/font_data.hpp"
 #include "annyos/ntfs.hpp"
 #include "annyos/pc_speaker.hpp"
 #include "annyos/ps2_keyboard.hpp"
 #include "annyos/serial.hpp"
 #include "annyos/timer_pit.hpp"
 #include "annyos/usb_hid.hpp"
+#include "shell_state.hpp"
 
 namespace {
 
-struct Color { uint8_t r, g, b; };
+using namespace annyos::shell;
 
-constexpr Color kDefaultScreenColor{0, 0, 170};
-constexpr Color kDefaultTextColor{220, 220, 220};
-constexpr Color kDefaultPromptColor{85, 255, 255};
-constexpr Color kDefaultInputColor{255, 255, 255};
-constexpr Color kDefaultHelpTitleColor{255, 220, 120};
-constexpr int32_t kHelpDescriptionOffset = 128;
-constexpr int32_t kDirectoryTypeOffset = 120;
-constexpr int32_t kDirectorySizeOffset = 195;
-constexpr int32_t kLineHeight = 22;
-constexpr int32_t kMargin = 28;
-constexpr uint32_t kHistoryCapacity = 32;
-constexpr uint32_t kLineCapacity = 100;
-constexpr uint32_t kInputCapacity = 88;
-constexpr uint32_t kWorkingDirectoryDepth = 12;
-constexpr uint32_t kWorkingDirectoryPathCapacity = 80;
 constexpr uint32_t kAtaDriveSlots = 4;
-constexpr uint32_t kFileBufferCapacity = 4096;
 constexpr uint32_t kApBufferCapacity = annyos::application::kApMaximumFileBytes;
 constexpr uint32_t kApiMemoryBytes = 8192;
 constexpr uint32_t kApiMemoryBlocks = 16;
 constexpr uint32_t kEnvironmentSlots = 16;
-
-struct ConsoleState {
-    char history[kHistoryCapacity][kLineCapacity];
-    Color history_color[kHistoryCapacity];
-    uint8_t history_accent_length[kHistoryCapacity];
-    bool history_bold[kHistoryCapacity];
-    bool history_columned[kHistoryCapacity];
-    bool history_tabular[kHistoryCapacity];
-    uint32_t history_count;
-    char command_history[kHistoryCapacity][kLineCapacity];
-    uint32_t command_history_count;
-    uint32_t command_history_cursor;
-    char input[kInputCapacity];
-    uint32_t input_length;
-    bool editor_active;
-    char editor_filename[13];
-    uint8_t editor_buffer[kFileBufferCapacity];
-    uint32_t editor_length;
-    uint32_t editor_cursor;
-    char editor_status[kLineCapacity];
-};
-
-struct WorkingDirectory {
-    uint32_t cluster_stack[kWorkingDirectoryDepth + 1];
-    uint32_t depth;
-    uint8_t drive_index;
-    char path[kWorkingDirectoryPathCapacity];
-};
 
 struct DriveState {
     annyos::storage::AtaPioDevice ata;
@@ -93,7 +49,7 @@ struct KernelApiContext {
     ConsoleState* console;
     const annyos::BootInfo* boot_info;
     const annyos::FramebufferInfo* framebuffer;
-    const WorkingDirectory* working_directory;
+    WorkingDirectory* working_directory;
 };
 
 ConsoleState g_console;
@@ -114,6 +70,11 @@ ApiMemoryBlock g_api_memory_blocks[kApiMemoryBlocks]{};
 EnvironmentEntry g_environment[kEnvironmentSlots]{};
 uint8_t g_audio_volume = 100;
 
+ThemeColors current_theme_colors() {
+    return {g_screen_color, g_text_color, g_prompt_color, g_input_color,
+            g_help_title_color, g_monochrome_theme};
+}
+
 bool driver_get_fat32_volume(void* context, uint8_t drive_index,
                              const annyos::storage::Fat32Volume** volume);
 bool driver_get_ata_device(void* context, uint8_t drive_index,
@@ -128,10 +89,6 @@ annyos::drivers::service::Fat32DriveSetV1 g_fat32_service{
     g_drives, driver_get_fat32_volume};
 annyos::drivers::service::AtaDriveSetV1 g_ata_service{
     g_drives, driver_get_ata_device};
-
-bool equal_ignore_case(const char* left, const char* right);
-uint32_t append_text(char* destination, uint32_t length, uint32_t capacity, const char* text);
-void append_decimal(char* output, uint32_t* length, uint64_t value);
 
 void debug_write(const char* text) {
     while (*text != '\0') {
@@ -279,101 +236,6 @@ void debug_write_hex(uint64_t value) {
     }
 }
 
-uint32_t pack_color(Color color, const annyos::FramebufferInfo& fb) {
-    if (fb.format == annyos::PixelFormat::rgb_reserved_8) {
-        return static_cast<uint32_t>(color.r) |
-               (static_cast<uint32_t>(color.g) << 8) |
-               (static_cast<uint32_t>(color.b) << 16);
-    }
-    if (fb.format == annyos::PixelFormat::bgr_reserved_8) {
-        return static_cast<uint32_t>(color.b) |
-               (static_cast<uint32_t>(color.g) << 8) |
-               (static_cast<uint32_t>(color.r) << 16);
-    }
-    return ((static_cast<uint32_t>(color.r) << __builtin_ctz(fb.mask.red)) & fb.mask.red) |
-           ((static_cast<uint32_t>(color.g) << __builtin_ctz(fb.mask.green)) & fb.mask.green) |
-           ((static_cast<uint32_t>(color.b) << __builtin_ctz(fb.mask.blue)) & fb.mask.blue) |
-           fb.mask.reserved;
-}
-
-void fill_rect_packed(const annyos::FramebufferInfo& fb, int32_t x, int32_t y,
-                      int32_t width, int32_t height, uint32_t packed_color) {
-    if (width <= 0 || height <= 0) return;
-    const int32_t x0 = x < 0 ? 0 : x;
-    const int32_t y0 = y < 0 ? 0 : y;
-    const int32_t x1 = x + width > static_cast<int32_t>(fb.width) ? static_cast<int32_t>(fb.width) : x + width;
-    const int32_t y1 = y + height > static_cast<int32_t>(fb.height) ? static_cast<int32_t>(fb.height) : y + height;
-    for (int32_t py = y0; py < y1; ++py) {
-        volatile uint32_t* row = fb.address + static_cast<uint64_t>(py) * fb.pixels_per_scanline;
-        for (int32_t px = x0; px < x1; ++px) row[px] = packed_color;
-    }
-}
-
-void fill_rect(const annyos::FramebufferInfo& fb, int32_t x, int32_t y,
-               int32_t width, int32_t height, Color color) {
-    fill_rect_packed(fb, x, y, width, height, pack_color(color, fb));
-}
-
-const annyos::ui::Glyph& get_glyph(char character, bool bold = false) {
-    if (character < 32 || character > 126) character = '?';
-    const unsigned index = static_cast<unsigned>(character - 32);
-    return bold ? annyos::ui::kSegoeUiBoldGlyphs[index] : annyos::ui::kSegoeUiGlyphs[index];
-}
-
-int32_t measure_text(const char* text) {
-    int32_t width = 0;
-    while (*text != '\0') width += get_glyph(*text++).advance;
-    return width;
-}
-
-int32_t draw_text(const annyos::FramebufferInfo& fb, int32_t x, int32_t y,
-                  const char* text, Color color, bool bold = false) {
-    const uint32_t packed = pack_color(color, fb);
-    int32_t pen_x = x;
-    while (*text != '\0') {
-        const annyos::ui::Glyph& glyph = get_glyph(*text++, bold);
-        const int32_t glyph_x = pen_x + glyph.left;
-        const int32_t glyph_y = y + annyos::ui::kSegoeUiBaseline - glyph.top;
-        for (uint32_t row = 0; row < glyph.height; ++row) {
-            for (uint32_t column = 0; column < glyph.width; ++column) {
-                if ((glyph.rows[row] & (1u << (glyph.width - 1 - column))) != 0) {
-                    fill_rect_packed(fb, glyph_x + static_cast<int32_t>(column),
-                                     glyph_y + static_cast<int32_t>(row), 1, 1, packed);
-                }
-            }
-        }
-        pen_x += glyph.advance;
-    }
-    return pen_x;
-}
-
-void add_history_line(ConsoleState& console, const char* text, Color color = kDefaultTextColor,
-                      bool bold = false, uint8_t accent_length = 0, bool columned = false) {
-    if (console.history_count == kHistoryCapacity) {
-        for (uint32_t line = 1; line < kHistoryCapacity; ++line) {
-            for (uint32_t i = 0; i < kLineCapacity; ++i) console.history[line - 1][i] = console.history[line][i];
-            console.history_color[line - 1] = console.history_color[line];
-            console.history_bold[line - 1] = console.history_bold[line];
-            console.history_accent_length[line - 1] = console.history_accent_length[line];
-            console.history_columned[line - 1] = console.history_columned[line];
-            console.history_tabular[line - 1] = console.history_tabular[line];
-        }
-        --console.history_count;
-    }
-    const uint32_t line = console.history_count++;
-    char* destination = console.history[line];
-    uint32_t i = 0;
-    while (i + 1 < kLineCapacity && text[i] != '\0') destination[i] = text[i], ++i;
-    destination[i] = '\0';
-    console.history_color[line] = color;
-    console.history_bold[line] = bold;
-    console.history_accent_length[line] = accent_length < i ? accent_length : static_cast<uint8_t>(i);
-    console.history_columned[line] = columned;
-    console.history_tabular[line] = false;
-}
-
-uint32_t append_text(char* destination, uint32_t length, uint32_t capacity, const char* text);
-
 void add_directory_row(ConsoleState& console, const char* name, const char* type, const char* size,
                        Color color = kDefaultTextColor, bool bold = false) {
     char line[kLineCapacity];
@@ -391,56 +253,6 @@ void clear_history(ConsoleState& console) {
     console.history[0][0] = '\0';
 }
 
-void remember_command(ConsoleState& console) {
-    if (console.input_length == 0) return;
-    const uint32_t last = console.command_history_count == 0 ? 0 : console.command_history_count - 1;
-    if (console.command_history_count == 0 ||
-        !equal_ignore_case(console.command_history[last], console.input)) {
-        if (console.command_history_count == kHistoryCapacity) {
-            for (uint32_t index = 1; index < kHistoryCapacity; ++index) {
-                for (uint32_t character = 0; character < kLineCapacity; ++character) {
-                    console.command_history[index - 1][character] = console.command_history[index][character];
-                }
-            }
-            --console.command_history_count;
-        }
-        char* destination = console.command_history[console.command_history_count++];
-        uint32_t index = 0;
-        while (index + 1 < kLineCapacity && console.input[index] != '\0') {
-            destination[index] = console.input[index];
-            ++index;
-        }
-        destination[index] = '\0';
-    }
-    console.command_history_cursor = console.command_history_count;
-}
-
-void recall_command(ConsoleState& console, bool older) {
-    if (older) {
-        if (console.command_history_cursor > 0) --console.command_history_cursor;
-    } else if (console.command_history_cursor < console.command_history_count) {
-        ++console.command_history_cursor;
-    }
-
-    console.input_length = 0;
-    if (console.command_history_cursor < console.command_history_count) {
-        const char* source = console.command_history[console.command_history_cursor];
-        while (console.input_length + 1 < kInputCapacity && source[console.input_length] != '\0') {
-            console.input[console.input_length] = source[console.input_length];
-            ++console.input_length;
-        }
-    }
-    console.input[console.input_length] = '\0';
-}
-
-char lowercase(char c);
-bool equal_ignore_case(const char* left, const char* right);
-
-uint32_t append_text(char* destination, uint32_t length, uint32_t capacity, const char* text) {
-    while (length + 1 < capacity && *text != '\0') destination[length++] = *text++;
-    destination[length] = '\0';
-    return length;
-}
 
 void add_help_row(ConsoleState& console, const char* command, const char* description) {
     char line[kLineCapacity];
@@ -459,6 +271,7 @@ void add_builtin_help(ConsoleState& console) {
     add_help_row(console, "DIR [PATH]", "List current directory or PATH");
     add_help_row(console, "CD [DIR|..|\\]", "Change directory");
     add_help_row(console, "C: THROUGH F:", "Switch to a mounted ATA drive");
+    add_help_row(console, "DISKDEMO", "Show the disk API report");
     add_help_row(console, "CREATE <FILE>", "Create empty file or use CREATE <FILE> TEXT");
     add_help_row(console, "EDIT <FILE>", "Arrows edit text; F2 saves, ESC cancels");
     add_help_row(console, "READ <FILE>", "Print a file's text contents");
@@ -477,52 +290,6 @@ void add_builtin_help(ConsoleState& console) {
     add_help_row(console, "NAME[.AP]", "Run an app from the current folder");
     add_help_row(console, "VER", "Show AnnyOS version");
     add_help_row(console, "HELP", "Show this command guide");
-}
-
-bool equal_ignore_case(const char* left, const char* right) {
-    while (*left != '\0' && *right != '\0') {
-        if (lowercase(*left) != lowercase(*right)) return false;
-        ++left;
-        ++right;
-    }
-    return *left == '\0' && *right == '\0';
-}
-
-char lowercase(char c) {
-    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-}
-
-char uppercase(char c) {
-    return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
-}
-
-bool command_equals(const char* input, const char* command) {
-    uint32_t i = 0;
-    while (input[i] != '\0' && command[i] != '\0') {
-        if (lowercase(input[i]) != command[i]) return false;
-        ++i;
-    }
-    return input[i] == '\0' && command[i] == '\0';
-}
-
-bool command_starts_with(const char* input, const char* prefix) {
-    uint32_t i = 0;
-    while (prefix[i] != '\0') {
-        if (input[i] == '\0' || lowercase(input[i]) != prefix[i]) return false;
-        ++i;
-    }
-    return true;
-}
-
-void append_decimal(char* output, uint32_t* length, uint64_t value) {
-    char digits[20];
-    uint32_t count = 0;
-    do {
-        digits[count++] = static_cast<char>('0' + value % 10);
-        value /= 10;
-    } while (value != 0 && count < sizeof(digits));
-    while (count > 0) output[(*length)++] = digits[--count];
-    output[*length] = '\0';
 }
 
 uint8_t read_cmos(uint8_t reg) {
@@ -600,11 +367,6 @@ void add_rtc_report(ConsoleState& console, bool show_date) {
         line[length] = '\0';
     }
     add_history_line(console, line);
-}
-
-bool is_default_text_color(Color color) {
-    return color.r == kDefaultTextColor.r && color.g == kDefaultTextColor.g &&
-           color.b == kDefaultTextColor.b;
 }
 
 bool apply_console_theme(const char* name) {
@@ -706,12 +468,12 @@ void attempt_reboot(const annyos::BootInfo& boot_info) {
                 line[length++] = kMessage[index];
             line[length] = '\0';
 
-            fill_rect(framebuffer, 0, 0, static_cast<int32_t>(framebuffer.width),
+            annyos::shell::ui::fill_rect(framebuffer, 0, 0, static_cast<int32_t>(framebuffer.width),
                       static_cast<int32_t>(framebuffer.height), g_screen_color);
-            const int32_t text_width = measure_text(line);
-            const int32_t x = (static_cast<int32_t>(framebuffer.width) - text_width) / 2;
+            const int32_t rendered_width = annyos::shell::ui::text_width(line);
+            const int32_t x = (static_cast<int32_t>(framebuffer.width) - rendered_width) / 2;
             const int32_t y = (static_cast<int32_t>(framebuffer.height) - kLineHeight) / 2;
-            draw_text(framebuffer, x, y, line, g_prompt_color, true);
+            annyos::shell::ui::draw_text(framebuffer, x, y, line, g_prompt_color, true);
             (void)annyos::timer::sleep_ms(120);
         }
         // Keep the spinner alive if firmware or chipset reset requests return.
@@ -807,12 +569,6 @@ void reset_working_directory(WorkingDirectory& directory, const annyos::storage:
     directory.path[3] = '\0';
 }
 
-uint32_t bounded_string_length(const char* text, uint32_t capacity) {
-    uint32_t length = 0;
-    while (length < capacity && text[length] != '\0') ++length;
-    return length;
-}
-
 bool valid_working_directory(const WorkingDirectory& directory) {
     if (directory.depth > kWorkingDirectoryDepth) return false;
     const uint32_t length = bounded_string_length(directory.path, sizeof(directory.path));
@@ -883,14 +639,10 @@ bool change_directory(WorkingDirectory* directory, const annyos::storage::Fat32V
     return true;
 }
 
-void redraw_history(const annyos::FramebufferInfo& fb, const ConsoleState& console,
-                    const WorkingDirectory& working_directory);
 void list_directory(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
                     const WorkingDirectory& current_directory, const char* requested_path);
-void begin_file_edit(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
-                     uint32_t directory_cluster, const char* filename);
-bool is_text_file(const uint8_t* data, uint32_t length);
-void display_file_contents(ConsoleState& console, const uint8_t* data, uint32_t length);
+bool parse_disk_argument(const char* text, uint8_t default_index, uint8_t* index);
+void list_disks(ConsoleState& console, const DriveState* drives);
 
 bool api_write_line(void* context, const char* text, uint8_t length) {
     auto& state = *static_cast<KernelApiContext*>(context);
@@ -929,7 +681,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.5");
+            add_history_line(*state.console, "AnnyOS Version 0.4.6");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -988,19 +740,6 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
         default:
             return false;
     }
-}
-
-bool parse_decimal(const char* text, uint32_t* value) {
-    if (text == nullptr || value == nullptr || *text == '\0') return false;
-    uint32_t parsed = 0;
-    while (*text != '\0') {
-        if (*text < '0' || *text > '9') return false;
-        const uint32_t digit = static_cast<uint32_t>(*text++ - '0');
-        if (parsed > (0xffffffffu - digit) / 10u) return false;
-        parsed = parsed * 10u + digit;
-    }
-    *value = parsed;
-    return true;
 }
 
 const char* api_argument(const annyos::api::ServiceArguments* arguments, uint32_t index) {
@@ -1105,7 +844,7 @@ bool api_invoke_service_v3(void* context, annyos::api::Service service,
     switch (service) {
         case annyos::api::Service::sys_shutdown:
             add_history_line(console, "Shutting down AnnyOS...", g_prompt_color);
-            redraw_history(*state.framebuffer, console, *state.working_directory);
+            annyos::shell::ui::redraw_history(*state.framebuffer, console, *state.working_directory, current_theme_colors());
             debug_write("AnnyOS: shutdown requested\r\n");
             if (state.boot_info->reset_system != nullptr) {
                 state.boot_info->reset_system(2, 0, 0, nullptr);
@@ -1117,7 +856,7 @@ bool api_invoke_service_v3(void* context, annyos::api::Service service,
         case annyos::api::Service::sys_clear:
         case annyos::api::Service::ui_clear_screen:
             clear_history(console);
-            redraw_history(*state.framebuffer, console, *state.working_directory);
+            annyos::shell::ui::redraw_history(*state.framebuffer, console, *state.working_directory, current_theme_colors());
             return true;
         case annyos::api::Service::sys_get_tick:
             add_api_decimal(console, "PIT ticks: ", annyos::timer::ticks());
@@ -1157,7 +896,7 @@ bool api_invoke_service_v3(void* context, annyos::api::Service service,
             debug_write(first);
             debug_write("\r\n");
             add_history_line(console, "Kernel panic requested by application.", g_help_title_color, true);
-            redraw_history(*state.framebuffer, console, *state.working_directory);
+            annyos::shell::ui::redraw_history(*state.framebuffer, console, *state.working_directory, current_theme_colors());
             for (;;) __asm__ volatile("cli; hlt" : : : "memory");
         case annyos::api::Service::fs_create: {
             DriveState& drive = g_drives[state.working_directory->drive_index];
@@ -1286,12 +1025,61 @@ bool api_invoke_service_v3(void* context, annyos::api::Service service,
             return true;
         }
         case annyos::api::Service::disk_info: {
-            const DriveState& drive = g_drives[state.working_directory->drive_index];
-            if (!drive.ata_ready) add_history_line(console, "No ATA disk is active.");
+            uint8_t index = state.working_directory->drive_index;
+            if (!parse_disk_argument(first, index, &index)) {
+                add_history_line(console, "DISK_INFO accepts optional drive C:, D:, E:, or F:.");
+                return true;
+            }
+            const DriveState& drive = g_drives[index];
+            if (!drive.ata_ready) add_history_line(console, "No ATA disk detected for that drive.");
             else {
+                char label[] = "Disk X: details";
+                label[5] = static_cast<char>('C' + index);
+                add_history_line(console, label, g_help_title_color, true);
                 add_api_decimal(console, "Disk sectors: ", drive.block.sector_count);
                 add_api_decimal(console, "Sector size: ", drive.block.sector_size);
-                add_history_line(console, drive.mounted ? "Filesystem: FAT32" : "Filesystem: unmounted");
+                add_history_line(console, drive.mounted ? "Filesystem: FAT32 mounted" :
+                                 "Filesystem: not mounted by AnnyOS");
+            }
+            return true;
+        }
+        case annyos::api::Service::disk_list:
+            list_disks(console, g_drives);
+            return true;
+        case annyos::api::Service::disk_space: {
+            uint8_t index = state.working_directory->drive_index;
+            if (!parse_disk_argument(first, index, &index)) {
+                add_history_line(console, "DISK_SPACE accepts optional drive C:, D:, E:, or F:.");
+                return true;
+            }
+            const DriveState& drive = g_drives[index];
+            uint32_t free_clusters = 0;
+            if (!drive.mounted || !annyos::storage::fat32_count_free_clusters(
+                    drive.volume, &free_clusters)) {
+                add_history_line(console, "Free space requires a mounted FAT32 volume.");
+            } else {
+                const uint64_t cluster_bytes = static_cast<uint64_t>(
+                    drive.volume.sectors_per_cluster) * drive.block.sector_size;
+                add_api_decimal(console, "FAT32 free bytes: ",
+                    static_cast<uint64_t>(free_clusters) * cluster_bytes);
+                add_api_decimal(console, "FAT32 total bytes: ",
+                    static_cast<uint64_t>(drive.volume.cluster_count) * cluster_bytes);
+            }
+            return true;
+        }
+        case annyos::api::Service::disk_use: {
+            uint8_t index = 0;
+            if (!parse_disk_argument(first, state.working_directory->drive_index, &index) ||
+                !g_drives[index].mounted) {
+                add_history_line(console, "DISK_USE requires a mounted drive: C:, D:, E:, or F:.");
+            } else {
+                reset_working_directory(*state.working_directory, g_drives[index].volume,
+                                        static_cast<char>('C' + index), index);
+                char line[kLineCapacity] = "Current directory: ";
+                const uint32_t length = append_text(line, 19, sizeof(line),
+                                                    state.working_directory->path);
+                line[length] = '\0';
+                add_history_line(console, line, g_prompt_color);
             }
             return true;
         }
@@ -1362,7 +1150,7 @@ bool api_invoke_service_v3(void* context, annyos::api::Service service,
                     ? "UI_DRAW_RECT args: X Y WIDTH HEIGHT RED GREEN BLUE (0-255)."
                     : "UI_DRAW_PIXEL args: X Y RED GREEN BLUE (0-255).");
             } else {
-                fill_rect(*state.framebuffer, static_cast<int32_t>(x), static_cast<int32_t>(y),
+                annyos::shell::ui::fill_rect(*state.framebuffer, static_cast<int32_t>(x), static_cast<int32_t>(y),
                     static_cast<int32_t>(width), static_cast<int32_t>(height),
                     {static_cast<uint8_t>(red), static_cast<uint8_t>(green), static_cast<uint8_t>(blue)});
             }
@@ -1605,338 +1393,6 @@ bool try_run_ap(ConsoleState& console, const annyos::storage::Fat32Volume& volum
     return false;
 }
 
-const char* command_arguments(const char* input, const char* command) {
-    uint32_t index = 0;
-    while (command[index] != '\0') {
-        if (input[index] == '\0' || lowercase(input[index]) != command[index]) return nullptr;
-        ++index;
-    }
-    if (input[index] == '\0') return input + index;
-    return input[index] == ' ' ? input + index + 1 : nullptr;
-}
-
-bool parse_file_arguments(const char* arguments, char filename[13], const char** content) {
-    if (arguments == nullptr || filename == nullptr || content == nullptr) return false;
-    while (*arguments == ' ') ++arguments;
-    uint32_t length = 0;
-    while (arguments[length] != '\0' && arguments[length] != ' ') {
-        if (length + 1 >= 13) return false;
-        filename[length] = arguments[length];
-        ++length;
-    }
-    if (length == 0) return false;
-    filename[length] = '\0';
-    arguments += length;
-    while (*arguments == ' ') ++arguments;
-    *content = arguments;
-    return true;
-}
-
-bool is_text_file(const uint8_t* data, uint32_t length) {
-    for (uint32_t index = 0; index < length; ++index) {
-        const uint8_t byte = data[index];
-        if (byte != '\n' && byte != '\r' && byte != '\t' &&
-            (byte < 32 || byte > 126)) return false;
-    }
-    return true;
-}
-
-void display_file_contents(ConsoleState& console, const uint8_t* data, uint32_t length) {
-    if (length == 0) {
-        add_history_line(console, "(empty file)");
-        return;
-    }
-    char line[kLineCapacity];
-    uint32_t line_length = 0;
-    for (uint32_t index = 0; index < length; ++index) {
-        const uint8_t byte = data[index];
-        if (byte == '\r') continue;
-        if (byte == '\n') {
-            line[line_length] = '\0';
-            add_history_line(console, line);
-            line_length = 0;
-            continue;
-        }
-        line[line_length++] = byte == '\t' ? ' ' : static_cast<char>(byte);
-        if (line_length + 1 == kLineCapacity) {
-            line[line_length] = '\0';
-            add_history_line(console, line);
-            line_length = 0;
-        }
-    }
-    if (line_length != 0) {
-        line[line_length] = '\0';
-        add_history_line(console, line);
-    }
-}
-
-bool read_text_file(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
-                    uint32_t directory_cluster, const char* filename,
-                    uint32_t* bytes_read) {
-    annyos::storage::Fat32DirectoryEntry entry{};
-    if (!annyos::storage::fat32_find_file(volume, directory_cluster, filename, &entry)) {
-        add_history_line(console, "File not found.");
-        return false;
-    }
-    if (entry.size > kFileBufferCapacity) {
-        add_history_line(console, "File is larger than the 4 KiB console limit.");
-        return false;
-    }
-    if (!annyos::storage::fat32_read_file(volume, entry, console.editor_buffer,
-                                           kFileBufferCapacity, bytes_read) ||
-        *bytes_read != entry.size) {
-        add_history_line(console, "Could not read file.");
-        return false;
-    }
-    return true;
-}
-
-void begin_file_edit(ConsoleState& console, const annyos::storage::Fat32Volume& volume,
-                     uint32_t directory_cluster, const char* filename) {
-    annyos::storage::Fat32DirectoryEntry entry{};
-    console.editor_length = 0;
-    console.editor_cursor = 0;
-    if (annyos::storage::fat32_find_file(volume, directory_cluster, filename, &entry)) {
-        if (entry.size > kFileBufferCapacity) {
-            add_history_line(console, "File is larger than the 4 KiB editor limit.");
-            return;
-        }
-        uint32_t bytes_read = 0;
-        if (!annyos::storage::fat32_read_file(volume, entry, console.editor_buffer,
-                                               kFileBufferCapacity, &bytes_read) ||
-            bytes_read != entry.size || !is_text_file(console.editor_buffer, bytes_read)) {
-            add_history_line(console, "File cannot be opened as editable text.");
-            return;
-        }
-        uint32_t normalized_length = 0;
-        for (uint32_t index = 0; index < bytes_read; ++index) {
-            if (console.editor_buffer[index] == '\r') continue;
-            console.editor_buffer[normalized_length++] = console.editor_buffer[index];
-        }
-        console.editor_length = normalized_length;
-        console.editor_cursor = normalized_length;
-        const char loaded[] = "File loaded.";
-        append_text(console.editor_status, 0, sizeof(console.editor_status), loaded);
-    } else {
-        const char created[] = "New file.";
-        append_text(console.editor_status, 0, sizeof(console.editor_status), created);
-    }
-
-    uint32_t index = 0;
-    while (filename[index] != '\0' && index + 1 < sizeof(console.editor_filename)) {
-        console.editor_filename[index] = filename[index];
-        ++index;
-    }
-    console.editor_filename[index] = '\0';
-    console.editor_active = true;
-}
-
-uint32_t editor_line_start(const ConsoleState& console, uint32_t position) {
-    uint32_t start = position > console.editor_length ? console.editor_length : position;
-    while (start > 0 && console.editor_buffer[start - 1] != '\n') --start;
-    return start;
-}
-
-uint32_t editor_line_end(const ConsoleState& console, uint32_t position) {
-    uint32_t end = position > console.editor_length ? console.editor_length : position;
-    while (end < console.editor_length && console.editor_buffer[end] != '\n') ++end;
-    return end;
-}
-
-void editor_insert(ConsoleState& console, uint8_t byte) {
-    if (console.editor_length >= kFileBufferCapacity) {
-        append_text(console.editor_status, 0, sizeof(console.editor_status), "Buffer full (4 KiB).");
-        return;
-    }
-    for (uint32_t index = console.editor_length; index > console.editor_cursor; --index) {
-        console.editor_buffer[index] = console.editor_buffer[index - 1];
-    }
-    console.editor_buffer[console.editor_cursor++] = byte;
-    ++console.editor_length;
-    console.editor_status[0] = '\0';
-}
-
-void editor_erase(ConsoleState& console, uint32_t position) {
-    if (position >= console.editor_length) return;
-    for (uint32_t index = position; index + 1 < console.editor_length; ++index) {
-        console.editor_buffer[index] = console.editor_buffer[index + 1];
-    }
-    --console.editor_length;
-    if (console.editor_cursor > position) --console.editor_cursor;
-    console.editor_status[0] = '\0';
-}
-
-void editor_move_vertical(ConsoleState& console, bool down) {
-    const uint32_t start = editor_line_start(console, console.editor_cursor);
-    const uint32_t end = editor_line_end(console, console.editor_cursor);
-    const uint32_t column = console.editor_cursor - start;
-    uint32_t target_start;
-    uint32_t target_end;
-    if (down) {
-        if (end >= console.editor_length) return;
-        target_start = end + 1;
-        target_end = editor_line_end(console, target_start);
-    } else {
-        if (start == 0) return;
-        target_end = start - 1;
-        target_start = editor_line_start(console, target_end);
-    }
-    const uint32_t target_length = target_end - target_start;
-    console.editor_cursor = target_start + (column < target_length ? column : target_length);
-}
-
-void finish_file_edit(ConsoleState& console, DriveState& drive,
-                      const WorkingDirectory& working_directory, bool save) {
-    if (save) {
-        const uint8_t* data = console.editor_length == 0 ? nullptr : console.editor_buffer;
-        if (!annyos::storage::fat32_write_file(
-                drive.volume, working_directory.cluster_stack[working_directory.depth],
-                console.editor_filename, data, console.editor_length)) {
-            append_text(console.editor_status, 0, sizeof(console.editor_status), "Save failed; keep editing.");
-            return;
-        }
-        add_history_line(console, "File saved.", g_prompt_color);
-    } else {
-        add_history_line(console, "Edit cancelled.");
-    }
-    console.editor_active = false;
-    console.editor_status[0] = '\0';
-}
-
-void handle_editor_event(ConsoleState& console, DriveState& drive,
-                         const WorkingDirectory& working_directory,
-                         const annyos::input::KeyEvent& event) {
-    switch (event.action) {
-        case annyos::input::KeyAction::character:
-            if (event.character >= 32 && event.character <= 126) {
-                editor_insert(console, static_cast<uint8_t>(event.character));
-            }
-            break;
-        case annyos::input::KeyAction::enter:
-            editor_insert(console, '\n');
-            break;
-        case annyos::input::KeyAction::backspace:
-            if (console.editor_cursor > 0) editor_erase(console, console.editor_cursor - 1);
-            break;
-        case annyos::input::KeyAction::delete_forward:
-            editor_erase(console, console.editor_cursor);
-            break;
-        case annyos::input::KeyAction::left:
-            if (console.editor_cursor > 0) --console.editor_cursor;
-            break;
-        case annyos::input::KeyAction::right:
-            if (console.editor_cursor < console.editor_length) ++console.editor_cursor;
-            break;
-        case annyos::input::KeyAction::up:
-            editor_move_vertical(console, false);
-            break;
-        case annyos::input::KeyAction::down:
-            editor_move_vertical(console, true);
-            break;
-        case annyos::input::KeyAction::home:
-            console.editor_cursor = editor_line_start(console, console.editor_cursor);
-            break;
-        case annyos::input::KeyAction::end:
-            console.editor_cursor = editor_line_end(console, console.editor_cursor);
-            break;
-        case annyos::input::KeyAction::save:
-            finish_file_edit(console, drive, working_directory, true);
-            break;
-        case annyos::input::KeyAction::escape:
-            finish_file_edit(console, drive, working_directory, false);
-            break;
-    }
-}
-
-bool handle_file_command(ConsoleState& console, DriveState& drive,
-                         const WorkingDirectory& working_directory) {
-    const char* arguments = nullptr;
-    enum class Operation : uint8_t { create, edit, read, remove };
-    Operation operation;
-    if ((arguments = command_arguments(console.input, "create")) != nullptr) {
-        operation = Operation::create;
-    } else if ((arguments = command_arguments(console.input, "edit")) != nullptr) {
-        operation = Operation::edit;
-    } else if ((arguments = command_arguments(console.input, "read")) != nullptr ||
-               (arguments = command_arguments(console.input, "type")) != nullptr) {
-        operation = Operation::read;
-    } else if ((arguments = command_arguments(console.input, "delete")) != nullptr ||
-               (arguments = command_arguments(console.input, "del")) != nullptr) {
-        operation = Operation::remove;
-    } else {
-        return false;
-    }
-
-    if (!drive.mounted) {
-        add_history_line(console, "FAT32 volume not found.");
-        return true;
-    }
-    char filename[13];
-    const char* content = nullptr;
-    if (!parse_file_arguments(arguments, filename, &content)) {
-        add_history_line(console, "Usage: CREATE|EDIT|READ|DELETE <8.3 FILE>");
-        return true;
-    }
-    const uint32_t directory_cluster =
-        working_directory.cluster_stack[working_directory.depth];
-
-    switch (operation) {
-        case Operation::create: {
-            annyos::storage::Fat32DirectoryEntry existing{};
-            if (annyos::storage::fat32_find_file(drive.volume, directory_cluster,
-                                                  filename, &existing)) {
-                add_history_line(console, "File already exists; use EDIT to replace it.");
-                return true;
-            }
-            const uint32_t content_length = bounded_string_length(content, kInputCapacity);
-            const uint8_t* data = content_length == 0 ? nullptr :
-                reinterpret_cast<const uint8_t*>(content);
-            if (content_length >= kInputCapacity ||
-                !annyos::storage::fat32_write_file(drive.volume, directory_cluster,
-                                                    filename, data, content_length)) {
-                add_history_line(console, "Create failed. Use a valid 8.3 name and writable volume.");
-            } else {
-                add_history_line(console, "File created.", g_prompt_color);
-            }
-            return true;
-        }
-        case Operation::edit:
-            if (*content != '\0') {
-                add_history_line(console, "Use EDIT <FILE> to open the editor; put text on following lines.");
-            } else {
-                begin_file_edit(console, drive.volume, directory_cluster, filename);
-            }
-            return true;
-        case Operation::read: {
-            if (*content != '\0') {
-                add_history_line(console, "Usage: READ <FILE>");
-                return true;
-            }
-            uint32_t bytes_read = 0;
-            if (read_text_file(console, drive.volume, directory_cluster, filename, &bytes_read)) {
-                if (!is_text_file(console.editor_buffer, bytes_read)) {
-                    add_history_line(console, "File contains binary data; text display is unavailable.");
-                } else {
-                    add_history_line(console, "FILE CONTENT", g_help_title_color, true);
-                    display_file_contents(console, console.editor_buffer, bytes_read);
-                }
-            }
-            return true;
-        }
-        case Operation::remove:
-            if (*content != '\0') {
-                add_history_line(console, "Usage: DELETE <FILE>");
-            } else if (annyos::storage::fat32_delete_file(
-                           drive.volume, directory_cluster, filename)) {
-                add_history_line(console, "File deleted.", g_prompt_color);
-            } else {
-                add_history_line(console, "Delete failed; file may be missing, read-only, or a folder.");
-            }
-            return true;
-    }
-    return true;
-}
-
 bool switch_drive(ConsoleState& console, DriveState* drives, WorkingDirectory* working_directory) {
     const char drive = uppercase(console.input[0]);
     if (console.input[1] != ':' || drive < 'C' || drive > 'F') return false;
@@ -2065,6 +1521,56 @@ void list_directory(ConsoleState& console, const annyos::storage::Fat32Volume& v
     add_history_line(console, summary, g_prompt_color);
 }
 
+bool parse_disk_argument(const char* text, uint8_t default_index, uint8_t* index) {
+    if (text == nullptr || index == nullptr || default_index >= kAtaDriveSlots) return false;
+    while (*text == ' ') ++text;
+    if (*text == '\0') {
+        *index = default_index;
+        return true;
+    }
+    const char letter = uppercase(text[0]);
+    if (letter < 'C' || letter > 'F' || text[1] != ':') return false;
+    text += 2;
+    while (*text == ' ') ++text;
+    if (*text != '\0') return false;
+    *index = static_cast<uint8_t>(letter - 'C');
+    return true;
+}
+
+void list_disks(ConsoleState& console, const DriveState* drives) {
+    add_history_line(console, "ANNYOS  |  DISK DEVICES", g_help_title_color, true);
+    // Keep headings and values short enough for the proportional framebuffer
+    // table's fixed column positions (name, device, size/filesystem).
+    add_history_line(console, "DISK\tBUS\tSIZE / FS", g_prompt_color, true);
+    uint32_t found = 0;
+    for (uint8_t index = 0; index < kAtaDriveSlots; ++index) {
+        const DriveState& drive = drives[index];
+        if (!drive.ata_ready) continue;
+        char name[3] = {static_cast<char>('C' + index), ':', '\0'};
+        // Keep the middle column short enough to fit before the fixed capacity
+        // column in the framebuffer table renderer.
+        const char* interface_name = drive.ata.io_base == 0x1f0
+            ? (drive.ata.drive == 0 ? "ATA P-M" : "ATA P-S")
+            : (drive.ata.drive == 0 ? "ATA S-M" : "ATA S-S");
+        char capacity[24] = "";
+        uint32_t length = 0;
+        const uint64_t bytes = static_cast<uint64_t>(drive.block.sector_count) *
+                               drive.block.sector_size;
+        append_decimal(capacity, &length, bytes / (1024 * 1024));
+        append_text(capacity, length, sizeof(capacity), " MiB ");
+        const uint32_t capacity_length = bounded_string_length(capacity, sizeof(capacity));
+        append_text(capacity, capacity_length, sizeof(capacity),
+                    drive.mounted ? "FAT32" : "unmounted");
+        add_directory_row(console, name, interface_name, capacity, g_text_color);
+        ++found;
+    }
+    if (found == 0) add_history_line(console, "No ATA disks detected.");
+    add_directory_row(console, "USB", "USB MSC", "not enumerated", g_help_title_color);
+    add_history_line(console,
+        "USB storage is not mounted. USB MSC driver support is required for FAT32 access.",
+        g_help_title_color);
+}
+
 void submit_command(ConsoleState& console, DriveState* drives,
                     WorkingDirectory* working_directory,
                     const annyos::api::AnnyOsApiV1& api) {
@@ -2090,7 +1596,8 @@ void submit_command(ConsoleState& console, DriveState* drives,
             handle_configsave_command(console, "");
         } else if (command_starts_with(console.input, "configsave ")) {
             handle_configsave_command(console, console.input + 11);
-        } else if (handle_file_command(console, active_drive, *working_directory)) {
+        } else if (annyos::shell::handle_file_command(console, active_drive.volume, active_drive.mounted,
+                                               *working_directory, current_theme_colors())) {
             // File commands are handled against the active FAT32 directory.
         } else if (const char* dir_path = command_arguments(console.input, "dir")) {
             if (!fat32_mounted) {
@@ -2136,177 +1643,6 @@ void submit_command(ConsoleState& console, DriveState* drives,
     console.input[0] = '\0';
 }
 
-int32_t visible_rows(const annyos::FramebufferInfo& fb) {
-    const int32_t rows = (static_cast<int32_t>(fb.height) - 2 * kMargin) / kLineHeight;
-    return rows > 1 ? rows : 1;
-}
-
-void draw_editor(const annyos::FramebufferInfo& fb, const ConsoleState& console) {
-    const int32_t width = static_cast<int32_t>(fb.width);
-    const int32_t height = static_cast<int32_t>(fb.height);
-    const Color header_color{0, 0, 96};
-    fill_rect(fb, 0, 0, width, height, g_screen_color);
-    fill_rect(fb, 0, 0, width, 48, header_color);
-    fill_rect(fb, 0, height - 52, width, 52, header_color);
-    draw_text(fb, kMargin, 12, "ANNYOS TEXT EDITOR", g_help_title_color, true);
-    const int32_t filename_x = draw_text(fb, kMargin + 225, 12, console.editor_filename,
-                                         g_input_color, true);
-    char size_text[32] = "  ";
-    uint32_t size_length = 2;
-    append_decimal(size_text, &size_length, console.editor_length);
-    append_text(size_text, size_length, sizeof(size_text), " / 4096 bytes");
-    draw_text(fb, filename_x + 12, 12, size_text, g_text_color);
-
-    const int32_t body_top = 60;
-    const int32_t footer_top = height - 52;
-    const int32_t body_height = footer_top - body_top;
-    const int32_t rows = body_height / kLineHeight > 0 ? body_height / kLineHeight : 1;
-    uint32_t cursor_line = 0;
-    for (uint32_t index = 0; index < console.editor_cursor; ++index) {
-        if (console.editor_buffer[index] == '\n') ++cursor_line;
-    }
-    const uint32_t first_line = cursor_line >= static_cast<uint32_t>(rows)
-        ? cursor_line - static_cast<uint32_t>(rows) + 1 : 0;
-    uint32_t line_number = 0;
-    uint32_t line_start = 0;
-    int32_t row = 0;
-    while (line_start <= console.editor_length && row < rows) {
-        const uint32_t line_end = editor_line_end(console, line_start);
-        if (line_number >= first_line) {
-            const int32_t y = body_top + row * kLineHeight;
-            char number[12] = "";
-            uint32_t number_length = 0;
-            append_decimal(number, &number_length, line_number + 1);
-            draw_text(fb, kMargin, y, number, g_prompt_color);
-
-            uint32_t visible_start = line_start;
-            if (line_number == cursor_line) {
-                const uint32_t cursor_column = console.editor_cursor - line_start;
-                const uint32_t horizontal_offset = cursor_column >= kInputCapacity - 4
-                    ? cursor_column - (kInputCapacity - 5) : 0;
-                visible_start += horizontal_offset;
-            }
-            char visible[kInputCapacity] = "";
-            char cursor_prefix[kInputCapacity] = "";
-            uint32_t visible_length = 0;
-            uint32_t prefix_length = 0;
-            for (uint32_t index = visible_start;
-                 index < line_end && visible_length + 1 < sizeof(visible); ++index) {
-                const char character = console.editor_buffer[index] == '\t'
-                    ? ' ' : static_cast<char>(console.editor_buffer[index]);
-                visible[visible_length++] = character;
-                if (line_number == cursor_line && index < console.editor_cursor) {
-                    cursor_prefix[prefix_length++] = character;
-                }
-            }
-            visible[visible_length] = '\0';
-            cursor_prefix[prefix_length] = '\0';
-            const int32_t text_x = kMargin + 38;
-            draw_text(fb, text_x, y, visible, g_text_color);
-            if (line_number == cursor_line) {
-                const int32_t cursor_x = text_x + measure_text(cursor_prefix);
-                fill_rect(fb, cursor_x, y + 18, 8, 2, g_input_color);
-            }
-            ++row;
-        }
-        if (line_end == console.editor_length) break;
-        line_start = line_end + 1;
-        ++line_number;
-    }
-
-    draw_text(fb, kMargin, footer_top + 5,
-              "F2 Save     ESC Cancel     Arrows Move     HOME/END Line",
-              g_prompt_color, true);
-    draw_text(fb, kMargin, footer_top + 27,
-              "ENTER New line     BACKSPACE/Delete Edit text",
-              g_text_color);
-    if (console.editor_status[0] != '\0') {
-        const int32_t status_x = measure_text("F2 Save     ESC Cancel     Arrows Move     HOME/END Line") +
-                                 2 * kMargin;
-        draw_text(fb, status_x, footer_top + 5, console.editor_status, g_help_title_color);
-    }
-}
-
-void draw_prompt(const annyos::FramebufferInfo& fb, const ConsoleState& console,
-                 const WorkingDirectory& working_directory, int32_t row) {
-    const int32_t y = kMargin + row * kLineHeight;
-    fill_rect(fb, 0, y, static_cast<int32_t>(fb.width), kLineHeight, g_screen_color);
-    const int32_t path_x = draw_text(fb, kMargin, y, working_directory.path, g_prompt_color);
-    const int32_t input_x = draw_text(fb, path_x, y, "> ", g_prompt_color);
-    const int32_t cursor_x = draw_text(fb, input_x, y, console.input, g_input_color);
-    fill_rect(fb, cursor_x, y + 18, 8, 2, g_input_color);
-}
-
-void redraw_history(const annyos::FramebufferInfo& fb, const ConsoleState& console,
-                    const WorkingDirectory& working_directory) {
-    if (console.editor_active) {
-        draw_editor(fb, console);
-        return;
-    }
-    const int32_t rows = visible_rows(fb);
-    fill_rect(fb, 0, 0, static_cast<int32_t>(fb.width), static_cast<int32_t>(fb.height), g_screen_color);
-    const int32_t history_rows = rows - 1;
-    const uint32_t visible_history = console.history_count < static_cast<uint32_t>(history_rows)
-        ? console.history_count : static_cast<uint32_t>(history_rows);
-    const uint32_t first_line = console.history_count - visible_history;
-    uint32_t visible_index = 0;
-    for (uint32_t line = first_line; line < console.history_count; ++line, ++visible_index) {
-        const int32_t y = kMargin + static_cast<int32_t>(visible_index) * kLineHeight;
-        const uint8_t accent_length = console.history_accent_length[line];
-        if (console.history_tabular[line]) {
-            char fields[3][24]{};
-            uint32_t field = 0;
-            uint32_t field_length = 0;
-            for (const char* cursor = console.history[line]; *cursor != '\0'; ++cursor) {
-                if (*cursor == '\t') {
-                    if (field < 2) ++field;
-                    field_length = 0;
-                } else if (field < 3 && field_length + 1 < sizeof(fields[field])) {
-                    fields[field][field_length++] = *cursor;
-                }
-            }
-            draw_text(fb, kMargin, y, fields[0], g_text_color, console.history_bold[line]);
-            draw_text(fb, kMargin + kDirectoryTypeOffset, y, fields[1], g_prompt_color,
-                      console.history_bold[line]);
-            draw_text(fb, kMargin + kDirectorySizeOffset, y, fields[2], g_text_color,
-                      console.history_bold[line]);
-        } else if (accent_length > 0) {
-            char accent[kLineCapacity];
-            uint32_t index = 0;
-            while (index < accent_length && index + 1 < sizeof(accent)) {
-                accent[index] = console.history[line][index];
-                ++index;
-            }
-            accent[index] = '\0';
-            const int32_t body_x = draw_text(fb, kMargin, y, accent, g_prompt_color, true);
-            if (console.history_columned[line]) {
-                draw_text(fb, kMargin + kHelpDescriptionOffset, y,
-                          console.history[line] + 16, g_text_color);
-            } else {
-                draw_text(fb, body_x, y, console.history[line] + accent_length, g_text_color);
-            }
-        } else {
-            const Color color = g_monochrome_theme ? g_text_color :
-                (is_default_text_color(console.history_color[line])
-                    ? g_text_color : console.history_color[line]);
-            draw_text(fb, kMargin, y, console.history[line], color,
-                      console.history_bold[line]);
-        }
-    }
-    draw_prompt(fb, console, working_directory, static_cast<int32_t>(visible_history));
-}
-
-void redraw_prompt(const annyos::FramebufferInfo& fb, const ConsoleState& console,
-                   const WorkingDirectory& working_directory) {
-    if (console.editor_active) {
-        draw_editor(fb, console);
-        return;
-    }
-    const int32_t history_rows = visible_rows(fb) - 1;
-    const uint32_t visible_history = console.history_count < static_cast<uint32_t>(history_rows)
-        ? console.history_count : static_cast<uint32_t>(history_rows);
-    draw_prompt(fb, console, working_directory, static_cast<int32_t>(visible_history));
-}
 
 } // namespace
 
@@ -2357,10 +1693,10 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.5]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.6]");
         add_history_line(console, "Type HELP for commands.");
     }
-    redraw_history(boot_info->framebuffer, console, working_directory);
+    annyos::shell::ui::redraw_history(boot_info->framebuffer, console, working_directory, current_theme_colors());
     debug_write("AnnyOS: DOS-style command console ready\r\n");
     const annyos::drivers::ServiceRecord* keyboard_record =
         g_driver_registry.query(annyos::drivers::ServiceId::keyboard_input, 1);
@@ -2376,38 +1712,39 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
         }
 
         if (console.editor_active) {
-            handle_editor_event(console, g_drives[working_directory.drive_index],
-                                working_directory, event);
+            annyos::shell::handle_editor_event(console,
+                g_drives[working_directory.drive_index].volume, working_directory, event,
+                current_theme_colors());
             if (console.editor_active) {
-                draw_editor(boot_info->framebuffer, console);
+                annyos::shell::ui::draw_editor(boot_info->framebuffer, console, current_theme_colors());
             } else {
-                redraw_history(boot_info->framebuffer, console, working_directory);
+                annyos::shell::ui::redraw_history(boot_info->framebuffer, console, working_directory, current_theme_colors());
             }
             continue;
         }
 
         if (event.action == annyos::input::KeyAction::enter) {
             submit_command(console, g_drives, &working_directory, api);
-            redraw_history(boot_info->framebuffer, console, working_directory);
+            annyos::shell::ui::redraw_history(boot_info->framebuffer, console, working_directory, current_theme_colors());
         } else if (event.action == annyos::input::KeyAction::up ||
                    event.action == annyos::input::KeyAction::down) {
             recall_command(console, event.action == annyos::input::KeyAction::up);
-            redraw_prompt(boot_info->framebuffer, console, working_directory);
+            annyos::shell::ui::redraw_prompt(boot_info->framebuffer, console, working_directory, current_theme_colors());
         } else if (event.action == annyos::input::KeyAction::backspace) {
             console.command_history_cursor = console.command_history_count;
             if (console.input_length > 0) console.input[--console.input_length] = '\0';
-            redraw_prompt(boot_info->framebuffer, console, working_directory);
+            annyos::shell::ui::redraw_prompt(boot_info->framebuffer, console, working_directory, current_theme_colors());
         } else if (event.action == annyos::input::KeyAction::character &&
                    console.input_length + 1 < kInputCapacity && event.character >= 32 && event.character <= 126) {
             console.command_history_cursor = console.command_history_count;
             const int32_t available_width = static_cast<int32_t>(boot_info->framebuffer.width) - 2 * kMargin;
-            const int32_t required_width = measure_text(working_directory.path) + measure_text("> ") +
-                                           measure_text(console.input) + get_glyph(event.character).advance;
+            const int32_t required_width = annyos::shell::ui::text_width(working_directory.path) + annyos::shell::ui::text_width("> ") +
+                                           annyos::shell::ui::text_width(console.input) + annyos::shell::ui::glyph_advance(event.character);
             if (required_width < available_width) {
                 console.input[console.input_length++] = event.character;
                 console.input[console.input_length] = '\0';
             }
-            redraw_prompt(boot_info->framebuffer, console, working_directory);
+            annyos::shell::ui::redraw_prompt(boot_info->framebuffer, console, working_directory, current_theme_colors());
         }
     }
 }

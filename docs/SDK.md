@@ -31,13 +31,14 @@ FAT32 file operations, bounded application memory, console drawing, keyboard,
 serial, USB-controller probing, and RTC access. ConfigSave calls require API v2;
 the newer service calls require API v3. The compiler records the required
 minimum version in each AP header. The `apps/lib/` modules expose the API
-groups as AADL classes. Imports resolve recursively relative to each source
+groups as AADL classes, including disk listing and FAT32 space queries through
+`DiskManagementApi`. Imports resolve recursively relative to each source
 file; `-I DIR` adds an import search root.
 
 `apps/lib/FileSystem.aadl` supplies the file-command rows used by `HELP`.
-Current AP v1 applications can display this help, but filesystem mutation is
-available only through the kernel CLI (`CREATE`, `EDIT`, `READ`, and `DELETE`);
-the AP API does not grant applications direct file access.
+`apps/EDIT.aadl` compiles to `EDIT.AP`; it forwards the first command-line
+argument to the kernel's bounded text editor service. Other filesystem API
+calls are explicitly bounded kernel services, not unrestricted disk access.
 
 The AnnyOS SDL library in `apps/lib/SDL.aadl` groups the currently available
 console, system, clock, storage-help, theme-settings, and audio wrappers. See

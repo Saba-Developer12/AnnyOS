@@ -103,6 +103,9 @@ API_SERVICES = {
     "SERIAL_READ": 62,
     "USB_SCAN": 63,
     "TIME_GET_RTC": 64,
+    "DISK_LIST": 65,
+    "DISK_SPACE": 66,
+    "DISK_USE": 67,
 }
 API_SERVICE_VERSIONS = {name: (1 if service <= 7 else 2 if service <= 13 else 3)
                         for name, service in API_SERVICES.items()}

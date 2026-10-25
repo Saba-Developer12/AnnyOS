@@ -34,6 +34,9 @@ $sources = @(
     @{ Path = 'src\kernel\ap_loader.cpp'; Name = 'ap_loader.obj' },
     @{ Path = 'src\kernel\config_save.cpp'; Name = 'config_save.obj' },
     @{ Path = 'src\kernel\driver_registry.cpp'; Name = 'driver_registry.obj' },
+    @{ Path = 'src\kernel\shell.cpp'; Name = 'shell.obj' },
+    @{ Path = 'src\kernel\shell_files.cpp'; Name = 'shell_files.obj' },
+    @{ Path = 'src\kernel\shell_ui.cpp'; Name = 'shell_ui.obj' },
     @{ Path = 'src\kernel\runtime.cpp'; Name = 'runtime.obj' },
     @{ Path = 'src\kernel\main.cpp'; Name = 'kernel_main.obj' }
 )

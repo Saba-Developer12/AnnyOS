@@ -22,6 +22,9 @@ clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/pc_speaker.cpp" -o "$BUILD/o
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/ap_loader.cpp" -o "$BUILD/obj/ap_loader.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/config_save.cpp" -o "$BUILD/obj/config_save.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/driver_registry.cpp" -o "$BUILD/obj/driver_registry.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/shell.cpp" -o "$BUILD/obj/shell.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/shell_files.cpp" -o "$BUILD/obj/shell_files.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/shell_ui.cpp" -o "$BUILD/obj/shell_ui.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/fat32_module.cpp" -o "$BUILD/obj/fat32_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ntfs_module.cpp" -o "$BUILD/obj/ntfs_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/apfs_module.cpp" -o "$BUILD/obj/apfs_module.obj"
@@ -46,6 +49,7 @@ MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link \
   "$BUILD/obj/ap_loader.obj" \
   "$BUILD/obj/config_save.obj" \
   "$BUILD/obj/driver_registry.obj" \
+  "$BUILD/obj/shell.obj" "$BUILD/obj/shell_files.obj" "$BUILD/obj/shell_ui.obj" \
   "$BUILD/obj/runtime.obj" "$BUILD/obj/kernel_main.obj"
 
 MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \

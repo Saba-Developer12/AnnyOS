@@ -75,6 +75,11 @@ are `SYS_VERSION`, `SYS_REBOOT`, `SYS_SHUTDOWN`, `SYS_UPTIME`, `SYS_CLEAR`,
 `BEEP` keep their API v1 service numbers. The other v3 calls require an AP
 header declaring API v3.
 
+Disk management services include `DISK_INFO` plus `DISK_LIST`, `DISK_SPACE`,
+and `DISK_USE`. Import `lib/DiskManagement.aadl` for the
+`DiskManagementApi` wrapper. `apps/DISKDEMO.aadl` is a sample which lists
+detected ATA disks and reports the selected drive's details and FAT32 space.
+
 Service operands come from the application's command line, split into at most
 eight quoted or unquoted values of up to 95 bytes each. For example,
 `APP.AP "CONFIG" "blue"` passes `CONFIG` as operand 0 and `blue` as operand 1

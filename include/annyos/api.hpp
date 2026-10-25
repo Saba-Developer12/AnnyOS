@@ -73,6 +73,9 @@ enum class Service : uint8_t {
     serial_read = 62,
     usb_scan = 63,
     time_get_rtc = 64,
+    disk_list = 65,
+    disk_space = 66,
+    disk_use = 67,
 
     // Public AADL/C++ spellings. SYS_VERSION, SYS_REBOOT, and BEEP retain the
     // original v1 service numbers so existing AP binaries remain compatible.
@@ -130,6 +133,9 @@ enum class Service : uint8_t {
     SERIAL_READ = serial_read,
     USB_SCAN = usb_scan,
     TIME_GET_RTC = time_get_rtc,
+    DISK_LIST = disk_list,
+    DISK_SPACE = disk_space,
+    DISK_USE = disk_use,
 };
 
 struct ServiceArguments {

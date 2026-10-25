@@ -1,0 +1,11 @@
+import "lib/GraphicsConsole.aadl";
+
+class EditApp {
+    method run() {
+        let console = new GraphicsConsoleApi();
+        console.openEditor();
+    }
+}
+
+let app = new EditApp();
+app.run();

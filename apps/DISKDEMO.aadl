@@ -1,0 +1,13 @@
+import "lib/DiskManagement.aadl";
+
+class DiskDemo {
+    method run() {
+        let disks = new DiskManagementApi();
+        disks.list();
+        disks.info();
+        disks.freeSpace();
+    }
+}
+
+let app = new DiskDemo();
+app.run();

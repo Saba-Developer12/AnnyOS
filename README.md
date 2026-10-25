@@ -1,6 +1,6 @@
 # AnnyOS
 
-Current version: **0.4.5**
+Current version: **0.4.6**
 
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,
@@ -20,6 +20,9 @@ The project is an early development system; it is not yet a general-purpose OS.
   keyboard enumeration/transport is not implemented yet; PS/2 remains the
   active input path. See [USB HID status](docs/USB_HID.md).
 - FAT32 volumes on legacy ATA devices can be selected as `C:` through `F:`.
+- Disk listing and FAT32 space APIs are available to AADL applications through
+  `DiskManagement.aadl`; the shell has no built-in `DISK` command. USB
+  mass-storage support is not implemented yet.
 - Text files can be created, read, edited, and deleted from the shell with
   `CREATE`, `READ`, `EDIT`, and `DELETE` in the current FAT32 directory.
 - AP version 1 bytecode applications, including `HELP`, `VER`, `MEM`, `DATE`,
