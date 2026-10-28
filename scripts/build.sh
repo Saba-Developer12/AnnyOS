@@ -18,6 +18,9 @@ clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ntfs.cpp" -o "$BUILD/obj/nt
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/apfs.cpp" -o "$BUILD/obj/apfs.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ata_pio.cpp" -o "$BUILD/obj/ata_pio.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/network/virtio_net.cpp" -o "$BUILD/obj/virtio_net.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/network/virtio_net_module.cpp" -o "$BUILD/obj/virtio_net_module.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/network/e1000.cpp" -o "$BUILD/obj/e1000.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/network/e1000_module.cpp" -o "$BUILD/obj/e1000_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/network_stack.cpp" -o "$BUILD/obj/network_stack.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/curl_host_bridge.cpp" -o "$BUILD/obj/curl_host_bridge.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/timer_pit.cpp" -o "$BUILD/obj/timer_pit.obj"
@@ -68,7 +71,7 @@ MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link \
   "$BUILD/obj/ps2_keyboard.obj" "$BUILD/obj/fat32.obj" \
   "$BUILD/obj/ntfs.obj" "$BUILD/obj/apfs.obj" \
   "$BUILD/obj/usb_hid.obj" \
-  "$BUILD/obj/ata_pio.obj" "$BUILD/obj/virtio_net.obj" "$BUILD/obj/timer_pit.obj" \
+  "$BUILD/obj/ata_pio.obj" "$BUILD/obj/virtio_net.obj" "$BUILD/obj/e1000.obj" "$BUILD/obj/timer_pit.obj" \
   "$BUILD/obj/serial_com1.obj" "$BUILD/obj/pc_speaker.obj" \
   "$BUILD/obj/ap_loader.obj" \
   "$BUILD/obj/config_save.obj" \
@@ -113,6 +116,14 @@ MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefault
   /export:annyos_speaker_tone /export:annyos_speaker_stop \
   "/out:$BUILD/speaker.sys" "$BUILD/obj/pc_speaker.obj" \
   "$BUILD/obj/timer_pit.obj" "$BUILD/obj/speaker_module.obj"
+MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
+  /dynamicbase /timestamp:0 /export:annyos_virtio_net_initialize /export:annyos_virtio_net_ready \
+  /export:annyos_virtio_net_mac_address /export:annyos_virtio_net_send /export:annyos_virtio_net_poll \
+  "/out:$BUILD/virtio.sys" "$BUILD/obj/virtio_net.obj" "$BUILD/obj/virtio_net_module.obj"
+MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
+  /dynamicbase /timestamp:0 /export:annyos_e1000_initialize /export:annyos_e1000_ready \
+  /export:annyos_e1000_mac_address /export:annyos_e1000_send /export:annyos_e1000_poll \
+  "/out:$BUILD/e1000.sys" "$BUILD/obj/e1000.obj" "$BUILD/obj/e1000_module.obj"
 
 cp "$BUILD/esp/EFI/BOOT/BOOTX64.EFI" "$BUILD/annyos.bin"
 cp "$BUILD/esp/EFI/BOOT/BOOTX64.EFI" "$BUILD/esp/EFI/BOOT/BOOTX86.EFI"
@@ -125,7 +136,8 @@ cp "$ROOT/font/segoe-ui/Segoe UI.ttf" "$ROOT/font/segoe-ui/Segoe UI Bold.ttf" \
 cp "$ROOT/font/segoe-ui/README.TXT" "$BUILD/esp/fonts/segoe-ui/"
 cp "$BUILD/ata.sys" "$BUILD/fat32.sys" "$BUILD/ntfs.sys" "$BUILD/apfs.sys" \
   "$BUILD/ps2kbd.sys" "$BUILD/usbhid.sys" \
-  "$BUILD/timer.sys" "$BUILD/serial.sys" "$BUILD/speaker.sys" "$BUILD/esp/driver/"
+  "$BUILD/timer.sys" "$BUILD/serial.sys" "$BUILD/speaker.sys" \
+  "$BUILD/virtio.sys" "$BUILD/e1000.sys" "$BUILD/esp/driver/"
 mkdir -p "$BUILD/esp/apps"
 for source in "$ROOT"/apps/*.aadl; do
   [ -f "$source" ] || continue

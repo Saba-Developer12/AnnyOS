@@ -1,6 +1,7 @@
 param(
     [switch]$Headless,
-    [string]$Firmware
+    [string]$Firmware,
+    [string]$NetworkDevice = 'virtio-net-pci,netdev=net0,disable-modern=on'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,7 +41,7 @@ $args = @(
     '-machine', 'pc', '-m', '512M', '-smp', '2',
     '-drive', "if=pflash,format=raw,readonly=on,file=$Firmware",
     '-drive', "if=ide,index=0,format=raw,file=$imagePath",
-    '-netdev', 'user,id=net0', '-device', 'virtio-net-pci,netdev=net0,disable-modern=on',
+    '-netdev', 'user,id=net0', '-device', $NetworkDevice,
     '-chardev', "socket,id=curlbridge,host=127.0.0.1,port=$bridgePort,server=off",
     '-serial', "file:$serialLog",
     '-serial', 'chardev:curlbridge',

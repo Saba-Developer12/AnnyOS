@@ -6,6 +6,7 @@
 #include "annyos/curl_host_bridge.hpp"
 #include "annyos/driver_registry.hpp"
 #include "annyos/driver_services.hpp"
+#include "annyos/e1000.hpp"
 #include "annyos/apfs.hpp"
 #include "annyos/fat32.hpp"
 #include "annyos/ntfs.hpp"
@@ -93,9 +94,36 @@ annyos::drivers::service::Fat32DriveSetV1 g_fat32_service{
     g_drives, driver_get_fat32_volume};
 annyos::drivers::service::AtaDriveSetV1 g_ata_service{
     g_drives, driver_get_ata_device};
+enum class EthernetBackend : uint8_t { none, virtio, e1000 };
+EthernetBackend g_ethernet_backend = EthernetBackend::none;
+bool ethernet_ready() {
+    if (g_ethernet_backend == EthernetBackend::virtio) return annyos::network::virtio_net_ready();
+    if (g_ethernet_backend == EthernetBackend::e1000) return annyos::network::e1000_ready();
+    return false;
+}
+annyos::network::MacAddress ethernet_mac_address() {
+    if (g_ethernet_backend == EthernetBackend::virtio)
+        return annyos::network::virtio_net_mac_address();
+    if (g_ethernet_backend == EthernetBackend::e1000)
+        return annyos::network::e1000_mac_address();
+    return {};
+}
+bool ethernet_send(const uint8_t* frame, uint16_t length) {
+    if (g_ethernet_backend == EthernetBackend::virtio)
+        return annyos::network::virtio_net_send(frame, length);
+    if (g_ethernet_backend == EthernetBackend::e1000)
+        return annyos::network::e1000_send(frame, length);
+    return false;
+}
+uint32_t ethernet_poll(annyos::network::ReceiveFrame receive, void* context, uint32_t budget) {
+    if (g_ethernet_backend == EthernetBackend::virtio)
+        return annyos::network::virtio_net_poll(receive, context, budget);
+    if (g_ethernet_backend == EthernetBackend::e1000)
+        return annyos::network::e1000_poll(receive, context, budget);
+    return 0;
+}
 const annyos::drivers::service::EthernetFramesV1 g_ethernet_service{
-    annyos::network::virtio_net_ready, annyos::network::virtio_net_mac_address,
-    annyos::network::virtio_net_send, annyos::network::virtio_net_poll};
+    ethernet_ready, ethernet_mac_address, ethernet_send, ethernet_poll};
 
 void debug_write(const char* text) {
     while (*text != '\0') {
@@ -199,11 +227,20 @@ bool initialize_fat32_driver(void*, annyos::drivers::DriverRegistry& registry) {
     return registry.publish(annyos::drivers::ServiceId::fat32_volumes, 1, &g_fat32_service);
 }
 
-bool initialize_virtio_net_driver(void* context, annyos::drivers::DriverRegistry& registry) {
-    if (context == nullptr ||
-        !annyos::network::virtio_net_initialize(
-            *static_cast<const annyos::BootInfo*>(context))) return false;
-    debug_write("AnnyOS: legacy virtio-net link initialized\r\n");
+bool initialize_ethernet_driver(void* context, annyos::drivers::DriverRegistry& registry) {
+    if (context == nullptr) return false;
+    const auto& boot_info = *static_cast<const annyos::BootInfo*>(context);
+    if (annyos::network::virtio_net_initialize(boot_info)) {
+        g_ethernet_backend = EthernetBackend::virtio;
+        debug_write("AnnyOS: legacy virtio-net link initialized\r\n");
+    } else if (annyos::network::e1000_initialize(boot_info)) {
+        g_ethernet_backend = EthernetBackend::e1000;
+        debug_write("AnnyOS: Intel 82540EM e1000 link initialized\r\n");
+    } else {
+        g_ethernet_backend = EthernetBackend::none;
+        debug_write("AnnyOS: no supported Ethernet controller found\r\n");
+        return false;
+    }
     return registry.publish(annyos::drivers::ServiceId::ethernet_frames, 1,
                             &g_ethernet_service);
 }
@@ -219,7 +256,7 @@ void initialize_kernel_drivers(const annyos::BootInfo* boot_info) {
         {DriverId::ps2_keyboard, "input.ps2kbd", 1, nullptr, 0, initialize_keyboard_driver},
         {DriverId::ata_pio, "storage.ata-pio", 1, nullptr, 0, initialize_ata_driver},
         {DriverId::fat32, "filesystem.fat32", 1, fat32_requirements, 1, initialize_fat32_driver},
-        {DriverId::virtio_net, "network.virtio-net", 1, nullptr, 0, initialize_virtio_net_driver},
+        {DriverId::pci_ethernet, "network.pci-ethernet", 1, nullptr, 0, initialize_ethernet_driver},
     };
 
     g_driver_registry.reset();
@@ -700,7 +737,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.7");
+            add_history_line(*state.console, "AnnyOS Version 0.4.8");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -2061,7 +2098,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.7]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.8]");
         add_history_line(console, "Type HELP for commands.");
     }
     annyos::shell::ui::redraw_history(boot_info->framebuffer, console, working_directory, current_theme_colors());

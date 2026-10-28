@@ -32,6 +32,7 @@ $sources = @(
     @{ Path = 'src\drivers\storage\apfs.cpp'; Name = 'apfs.obj' },
     @{ Path = 'src\drivers\storage\ata_pio.cpp'; Name = 'ata_pio.obj' },
     @{ Path = 'src\drivers\network\virtio_net.cpp'; Name = 'virtio_net.obj' },
+    @{ Path = 'src\drivers\network\e1000.cpp'; Name = 'e1000.obj' },
     @{ Path = 'src\drivers\system\timer_pit.cpp'; Name = 'timer_pit.obj' },
     @{ Path = 'src\drivers\system\serial_com1.cpp'; Name = 'serial_com1.obj' },
     @{ Path = 'src\drivers\system\pc_speaker.cpp'; Name = 'pc_speaker.obj' },
@@ -64,7 +65,7 @@ $lwipSources = @(
     'src/core/timeouts.c', 'src/core/udp.c', 'src/core/ipv4/acd.c',
     'src/core/ipv4/dhcp.c', 'src/core/ipv4/etharp.c', 'src/core/ipv4/icmp.c',
     'src/core/ipv4/ip4.c', 'src/core/ipv4/ip4_addr.c', 'src/core/ipv4/ip4_frag.c',
-    'src/netif/ethernet.c',
+    'src/netif/ethernet.c'
 )
 $lwipFlags = @(
     '--target=x86_64-pc-windows-msvc', '-std=c11', '-O2', '-Wall', '-Wextra',
@@ -89,7 +90,9 @@ $moduleSources = @(
     @{ Path = 'src\drivers\input\usbhid_module.cpp'; Name = 'usbhid_module.obj' },
     @{ Path = 'src\drivers\system\timer_module.cpp'; Name = 'timer_module.obj' },
     @{ Path = 'src\drivers\system\serial_module.cpp'; Name = 'serial_module.obj' },
-    @{ Path = 'src\drivers\system\speaker_module.cpp'; Name = 'speaker_module.obj' }
+    @{ Path = 'src\drivers\system\speaker_module.cpp'; Name = 'speaker_module.obj' },
+    @{ Path = 'src\drivers\network\virtio_net_module.cpp'; Name = 'virtio_net_module.obj' },
+    @{ Path = 'src\drivers\network\e1000_module.cpp'; Name = 'e1000_module.obj' }
 )
 foreach ($source in $moduleSources) {
     $sourcePath = Join-Path $root $source.Path
@@ -192,6 +195,26 @@ $speakerModuleArgs = @(
 & $linker @speakerModuleArgs
 if ($LASTEXITCODE -ne 0) { throw 'PC speaker module link failed.' }
 
+$virtioModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_virtio_net_initialize', '/export:annyos_virtio_net_ready',
+    '/export:annyos_virtio_net_mac_address', '/export:annyos_virtio_net_send',
+    '/export:annyos_virtio_net_poll', "/out:$(Join-Path $buildDir 'virtio.sys')",
+    (Join-Path $objectDir 'virtio_net.obj'), (Join-Path $objectDir 'virtio_net_module.obj')
+)
+& $linker @virtioModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'VirtIO network driver module link failed.' }
+
+$e1000ModuleArgs = @(
+    '/dll', '/noentry', '/nodefaultlib', '/machine:x64', '/dynamicbase', '/timestamp:0',
+    '/export:annyos_e1000_initialize', '/export:annyos_e1000_ready',
+    '/export:annyos_e1000_mac_address', '/export:annyos_e1000_send',
+    '/export:annyos_e1000_poll', "/out:$(Join-Path $buildDir 'e1000.sys')",
+    (Join-Path $objectDir 'e1000.obj'), (Join-Path $objectDir 'e1000_module.obj')
+)
+& $linker @e1000ModuleArgs
+if ($LASTEXITCODE -ne 0) { throw 'Intel e1000 driver module link failed.' }
+
 $kernelImage = Join-Path $buildDir 'annyos.bin'
 Copy-Item -LiteralPath $efiPath -Destination $kernelImage -Force
 Copy-Item -LiteralPath $efiPath -Destination (Join-Path $efiDir 'BOOTX86.EFI') -Force
@@ -211,6 +234,8 @@ Copy-Item -LiteralPath (Join-Path $buildDir 'usbhid.sys') -Destination $driverDi
 Copy-Item -LiteralPath (Join-Path $buildDir 'timer.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'serial.sys') -Destination $driverDir -Force
 Copy-Item -LiteralPath (Join-Path $buildDir 'speaker.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'virtio.sys') -Destination $driverDir -Force
+Copy-Item -LiteralPath (Join-Path $buildDir 'e1000.sys') -Destination $driverDir -Force
 
 $appsDir = Join-Path $espDir 'apps'
 New-Item -ItemType Directory -Force -Path $appsDir | Out-Null

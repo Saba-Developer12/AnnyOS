@@ -95,7 +95,8 @@ drivers, fonts, and packed AP applications. The standard x64 fallback path is
 PE image, not 32-bit EFI applications. `annyos.bin` is also a copy of the
 current combined EFI loader/kernel image; it is not yet a separately loaded
 kernel. `driver/ata.sys`, `driver/fat32.sys`, `driver/ps2kbd.sys`,
-`driver/timer.sys`, `driver/serial.sys`, and `driver/speaker.sys` are PE32+
+`driver/timer.sys`, `driver/serial.sys`, `driver/speaker.sys`,
+`driver/VIRTIO.SYS`, and `driver/E1000.SYS` are PE32+
 modules with exported AnnyOS entry APIs. The kernel statically links active
 drivers; loading `.sys` modules at runtime is a later step. The PIT driver
 provides polling-based ticks and busy-wait sleeps until interrupt handling is
@@ -119,6 +120,14 @@ current PE32+ `.sys` artifacts are packaged exports and are not mapped or
 executed by the kernel. Runtime loading will require a defined module ABI,
 relocation/import handling, memory ownership, unload rules, and fault
 containment before external modules can be trusted.
+
+For Ethernet, startup probes legacy PCI VirtIO-net first and falls back to the
+Intel 82540EM PCI device (`8086:100E`). Both implement the same polling
+`EthernetFramesV1` service used by lwIP. `VIRTIO.SYS` and `E1000.SYS` are
+separately built PE32+ export artifacts, while the running kernel currently
+uses statically linked driver code. No Wi-Fi chipset, USB Ethernet adapter, or
+generic Internet-device support is claimed; those need their own bus transport,
+chipset protocol, and often firmware implementation.
 
 AADL remains a bounded source compiler targeting AP v1 interpreted bytecode.
 Its classes and inheritance are compile-time constructs; it does not yet

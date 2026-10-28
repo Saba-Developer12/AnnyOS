@@ -1,6 +1,6 @@
 # AnnyOS
 
-Current version: **0.4.7**
+Current version: **0.4.8**
 
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,
@@ -20,6 +20,11 @@ The project is an early development system; it is not yet a general-purpose OS.
   keyboard enumeration/transport is not implemented yet; PS/2 remains the
   active input path. See [USB HID status](docs/USB_HID.md).
 - FAT32 volumes on legacy ATA devices can be selected as `C:` through `F:`.
+- Ethernet currently supports legacy PCI VirtIO-net and Intel 82540EM (`8086:100E`,
+  including QEMU's e1000 model). The kernel selects VirtIO first, then falls back
+  to e1000; `driver/VIRTIO.SYS` and `driver/E1000.SYS` are exported with the same
+  polling frame interface. Wi-Fi chipsets and USB network adapters are not yet
+  supported, and there is no generic driver that can work with every adapter.
 - Disk listing and FAT32 space APIs are available to AADL applications through
   `DiskManagement.aadl`; the shell has no built-in `DISK` command. USB
   mass-storage support is not implemented yet.
@@ -79,6 +84,10 @@ make run
 
 Set `OVMF_CODE=/path/to/OVMF_CODE.fd` if the firmware is not in a standard
 location. `make run` builds the FAT32 disk and boots it in QEMU.
+
+To exercise the Intel e1000 fallback in QEMU, launch with
+`ANNYOS_QEMU_NIC=e1000,netdev=net0 make run` (or pass
+`-NetworkDevice 'e1000,netdev=net0'` to `scripts/run_qemu.ps1`).
 
 ## Repository layout
 

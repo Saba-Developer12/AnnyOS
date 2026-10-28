@@ -9,6 +9,7 @@ if [[ ! -f "$IMAGE" && ! -f "$ESP/EFI/BOOT/BOOTX64.EFI" ]]; then
 fi
 QEMU="${QEMU:-qemu-system-x86_64}"
 CURL_BRIDGE_PORT="${ANNYOS_CURL_BRIDGE_PORT:-43210}"
+QEMU_NIC="${ANNYOS_QEMU_NIC:-virtio-net-pci,netdev=net0,disable-modern=on}"
 FIRMWARE="${OVMF_CODE:-}"
 if [[ -z "$FIRMWARE" ]]; then
   for candidate in \
@@ -54,7 +55,7 @@ else
 fi
 "$QEMU" -machine pc -m 512M -smp 2 -drive "if=pflash,format=raw,readonly=on,file=$FIRMWARE" \
   -drive "$DISK" \
-  -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-modern=on \
+  -netdev user,id=net0 -device "$QEMU_NIC" \
   -chardev "socket,id=curlbridge,host=127.0.0.1,port=$CURL_BRIDGE_PORT,server=off" \
   -serial "file:$ROOT/build/serial.log" \
   -serial chardev:curlbridge \

@@ -31,6 +31,7 @@ enum class DriverId : uint32_t {
     ata_pio = 4,
     fat32 = 5,
     virtio_net = 6,
+    pci_ethernet = 7,
 };
 
 struct ServiceRequirement {
