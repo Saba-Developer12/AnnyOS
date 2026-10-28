@@ -1,0 +1,11 @@
+import "lib/Curl.aadl";
+
+class CurlCommand {
+    method run() {
+        let curl = new Curl();
+        curl.request();
+    }
+}
+
+let curl = new CurlCommand();
+curl.run();

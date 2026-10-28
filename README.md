@@ -1,6 +1,6 @@
 # AnnyOS
 
-Current version: **0.4.6**
+Current version: **0.4.7**
 
 AnnyOS is an experimental x86_64 bare-metal operating system with a UEFI boot
 path. The boot application gathers GOP framebuffer and memory-map information,
@@ -32,6 +32,13 @@ The project is an early development system; it is not yet a general-purpose OS.
   See [AADL documentation](docs/AADL.md).
 - Segoe UI font assets rasterized into a freestanding kernel header.
 - Build scripts for Windows PowerShell and Unix-like hosts, plus a QEMU launcher.
+
+The upstream curl source is linked as the `curl/` submodule. In QEMU, the
+shell's `CURL` `.AP` wrapper sends HTTP(S) requests over a COM2 bridge to the
+upstream host curl CLI and displays or saves the response. Run `CURL -h` for
+supported options. `make run` starts the bridge automatically; `make curl`
+builds the upstream host binary. This development bridge is QEMU-only, not a
+native bare-metal network client. See [curl integration notes](docs/CURL_PORTING.md).
 
 FAT32 is the only filesystem currently mounted for file operations. NTFS and
 APFS boot/container metadata can be detected, but neither is mounted yet.

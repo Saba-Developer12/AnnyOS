@@ -48,6 +48,11 @@ struct MemoryDescriptor {
 // descriptor structure on a different firmware implementation.
 struct BootInfo {
     FramebufferInfo framebuffer;
+    // UEFI-owned, physically contiguous memory reserved for device DMA. The
+    // allocator constrains this region below 4 GiB for legacy PCI devices.
+    void* dma_region;
+    uint64_t dma_physical_address;
+    uint64_t dma_region_size;
     const void* memory_map;
     uint64_t memory_map_size;
     uint64_t memory_descriptor_size;

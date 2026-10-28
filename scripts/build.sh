@@ -7,7 +7,8 @@ mkdir -p "$BUILD/obj" "$BUILD/esp/EFI/BOOT" "$BUILD/esp/fonts/segoe-ui"
 COMMON=(--target=x86_64-pc-windows-msvc -std=c++20 -O2 -Wall -Wextra
   -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector
   -fno-threadsafe-statics -fno-use-cxa-atexit -mno-red-zone -fshort-wchar
-  -nostdlib -I"$ROOT/include" -I"$ROOT/src/boot")
+  -nostdlib -I"$ROOT/include" -I"$ROOT/src/boot"
+  -I"$ROOT/ports/lwip/include" -I"$ROOT/third_party/lwip/src/include")
 clang++ "${COMMON[@]}" -c "$ROOT/src/boot/efi_main.cpp" -o "$BUILD/obj/efi_main.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/boot/gop_helper.cpp" -o "$BUILD/obj/gop_helper.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/input/ps2_keyboard.cpp" -o "$BUILD/obj/ps2_keyboard.obj"
@@ -16,6 +17,9 @@ clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/fat32.cpp" -o "$BUILD/obj/f
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ntfs.cpp" -o "$BUILD/obj/ntfs.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/apfs.cpp" -o "$BUILD/obj/apfs.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/storage/ata_pio.cpp" -o "$BUILD/obj/ata_pio.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/network/virtio_net.cpp" -o "$BUILD/obj/virtio_net.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/network_stack.cpp" -o "$BUILD/obj/network_stack.obj"
+clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/curl_host_bridge.cpp" -o "$BUILD/obj/curl_host_bridge.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/timer_pit.cpp" -o "$BUILD/obj/timer_pit.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/serial_com1.cpp" -o "$BUILD/obj/serial_com1.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/pc_speaker.cpp" -o "$BUILD/obj/pc_speaker.obj"
@@ -35,6 +39,26 @@ clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/serial_module.cpp" -o "$BUIL
 clang++ "${COMMON[@]}" -c "$ROOT/src/drivers/system/speaker_module.cpp" -o "$BUILD/obj/speaker_module.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/runtime.cpp" -o "$BUILD/obj/runtime.obj"
 clang++ "${COMMON[@]}" -c "$ROOT/src/kernel/main.cpp" -o "$BUILD/obj/kernel_main.obj"
+LWIP_SOURCES=(
+  src/core/init.c src/core/def.c src/core/dns.c src/core/inet_chksum.c
+  src/core/ip.c src/core/mem.c src/core/memp.c src/core/netif.c src/core/pbuf.c
+  src/core/raw.c src/core/stats.c src/core/sys.c src/core/altcp.c
+  src/core/altcp_alloc.c src/core/altcp_tcp.c src/core/tcp.c src/core/tcp_in.c
+  src/core/tcp_out.c src/core/timeouts.c src/core/udp.c src/core/ipv4/acd.c
+  src/core/ipv4/dhcp.c src/core/ipv4/etharp.c src/core/ipv4/icmp.c
+  src/core/ipv4/ip4.c src/core/ipv4/ip4_addr.c src/core/ipv4/ip4_frag.c
+  src/netif/ethernet.c
+)
+LWIP_COMMON=(--target=x86_64-pc-windows-msvc -std=c11 -O2 -Wall -Wextra
+  -ffreestanding -fno-builtin -fno-stack-protector -mno-red-zone -nostdlib
+  -I"$ROOT/ports/lwip/include" -I"$ROOT/third_party/lwip/src/include")
+LWIP_OBJECTS=()
+for source in "${LWIP_SOURCES[@]}"; do
+  object_name="lwip_$(basename "${source%.c}").obj"
+  # Source basenames are unique in this explicitly selected lwIP subset.
+  clang "${LWIP_COMMON[@]}" -c "$ROOT/third_party/lwip/$source" -o "$BUILD/obj/$object_name"
+  LWIP_OBJECTS+=("$BUILD/obj/$object_name")
+done
 # Relative paths work with native POSIX LLD. Excluding MSYS argument conversion
 # also keeps Git Bash from rewriting LLD's slash-prefixed linker options.
 MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link \
@@ -44,13 +68,15 @@ MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link \
   "$BUILD/obj/ps2_keyboard.obj" "$BUILD/obj/fat32.obj" \
   "$BUILD/obj/ntfs.obj" "$BUILD/obj/apfs.obj" \
   "$BUILD/obj/usb_hid.obj" \
-  "$BUILD/obj/ata_pio.obj" "$BUILD/obj/timer_pit.obj" \
+  "$BUILD/obj/ata_pio.obj" "$BUILD/obj/virtio_net.obj" "$BUILD/obj/timer_pit.obj" \
   "$BUILD/obj/serial_com1.obj" "$BUILD/obj/pc_speaker.obj" \
   "$BUILD/obj/ap_loader.obj" \
   "$BUILD/obj/config_save.obj" \
   "$BUILD/obj/driver_registry.obj" \
   "$BUILD/obj/shell.obj" "$BUILD/obj/shell_files.obj" "$BUILD/obj/shell_ui.obj" \
-  "$BUILD/obj/runtime.obj" "$BUILD/obj/kernel_main.obj"
+  "$BUILD/obj/runtime.obj" "$BUILD/obj/network_stack.obj" \
+  "$BUILD/obj/curl_host_bridge.obj" "$BUILD/obj/kernel_main.obj" \
+  "${LWIP_OBJECTS[@]}"
 
 MSYS2_ARG_CONV_EXCL='*' MSYS_ARG_CONV_EXCL='*' lld-link /dll /noentry /nodefaultlib /machine:x64 \
   /dynamicbase /timestamp:0 /export:annyos_fat32_mount /export:annyos_fat32_list_root \

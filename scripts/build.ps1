@@ -8,6 +8,7 @@ $efiDir = Join-Path $espDir 'EFI\BOOT'
 $driverDir = Join-Path $espDir 'driver'
 $fontDir = Join-Path $espDir 'fonts\segoe-ui'
 $clang = (Get-Command clang++ -ErrorAction Stop).Source
+$cCompiler = (Get-Command clang -ErrorAction Stop).Source
 $linker = (Get-Command lld-link -ErrorAction Stop).Source
 
 New-Item -ItemType Directory -Force -Path $objectDir, $efiDir, $driverDir, $fontDir | Out-Null
@@ -17,7 +18,9 @@ $commonFlags = @(
     '-ffreestanding', '-fno-builtin', '-fno-exceptions', '-fno-rtti', '-fno-stack-protector',
     '-fno-threadsafe-statics', '-fno-use-cxa-atexit', '-mno-red-zone',
     '-fshort-wchar', '-nostdlib', "-I$(Join-Path $root 'include')",
-    "-I$(Join-Path $root 'src\boot')"
+    "-I$(Join-Path $root 'src\boot')",
+    "-I$(Join-Path $root 'ports\lwip\include')",
+    "-I$(Join-Path $root 'third_party\lwip\src\include')"
 )
 $sources = @(
     @{ Path = 'src\boot\efi_main.cpp'; Name = 'efi_main.obj' },
@@ -28,6 +31,7 @@ $sources = @(
     @{ Path = 'src\drivers\storage\ntfs.cpp'; Name = 'ntfs.obj' },
     @{ Path = 'src\drivers\storage\apfs.cpp'; Name = 'apfs.obj' },
     @{ Path = 'src\drivers\storage\ata_pio.cpp'; Name = 'ata_pio.obj' },
+    @{ Path = 'src\drivers\network\virtio_net.cpp'; Name = 'virtio_net.obj' },
     @{ Path = 'src\drivers\system\timer_pit.cpp'; Name = 'timer_pit.obj' },
     @{ Path = 'src\drivers\system\serial_com1.cpp'; Name = 'serial_com1.obj' },
     @{ Path = 'src\drivers\system\pc_speaker.cpp'; Name = 'pc_speaker.obj' },
@@ -38,6 +42,8 @@ $sources = @(
     @{ Path = 'src\kernel\shell_files.cpp'; Name = 'shell_files.obj' },
     @{ Path = 'src\kernel\shell_ui.cpp'; Name = 'shell_ui.obj' },
     @{ Path = 'src\kernel\runtime.cpp'; Name = 'runtime.obj' },
+    @{ Path = 'src\kernel\network_stack.cpp'; Name = 'network_stack.obj' },
+    @{ Path = 'src\kernel\curl_host_bridge.cpp'; Name = 'curl_host_bridge.obj' },
     @{ Path = 'src\kernel\main.cpp'; Name = 'kernel_main.obj' }
 )
 $objects = @()
@@ -46,6 +52,32 @@ foreach ($source in $sources) {
     $objectPath = Join-Path $objectDir $source.Name
     & $clang @commonFlags -c $sourcePath -o $objectPath
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $($source.Path)" }
+    $objects += $objectPath
+}
+
+$lwipSources = @(
+    'src/core/init.c', 'src/core/def.c', 'src/core/dns.c', 'src/core/inet_chksum.c',
+    'src/core/ip.c', 'src/core/mem.c', 'src/core/memp.c', 'src/core/netif.c',
+    'src/core/pbuf.c', 'src/core/raw.c', 'src/core/stats.c', 'src/core/sys.c',
+    'src/core/altcp.c', 'src/core/altcp_alloc.c', 'src/core/altcp_tcp.c',
+    'src/core/tcp.c', 'src/core/tcp_in.c', 'src/core/tcp_out.c',
+    'src/core/timeouts.c', 'src/core/udp.c', 'src/core/ipv4/acd.c',
+    'src/core/ipv4/dhcp.c', 'src/core/ipv4/etharp.c', 'src/core/ipv4/icmp.c',
+    'src/core/ipv4/ip4.c', 'src/core/ipv4/ip4_addr.c', 'src/core/ipv4/ip4_frag.c',
+    'src/netif/ethernet.c',
+)
+$lwipFlags = @(
+    '--target=x86_64-pc-windows-msvc', '-std=c11', '-O2', '-Wall', '-Wextra',
+    '-ffreestanding', '-fno-builtin', '-fno-stack-protector', '-mno-red-zone', '-nostdlib',
+    "-I$(Join-Path $root 'ports\lwip\include')",
+    "-I$(Join-Path $root 'third_party\lwip\src\include')"
+)
+foreach ($relativeSource in $lwipSources) {
+    $sourcePath = Join-Path $root ('third_party\lwip\' + $relativeSource.Replace('/', '\'))
+    $baseName = [IO.Path]::GetFileNameWithoutExtension($relativeSource)
+    $objectPath = Join-Path $objectDir ("lwip_{0}.obj" -f $baseName)
+    & $cCompiler @lwipFlags -c $sourcePath -o $objectPath
+    if ($LASTEXITCODE -ne 0) { throw "lwIP compilation failed: $relativeSource" }
     $objects += $objectPath
 }
 

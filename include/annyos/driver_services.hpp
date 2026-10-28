@@ -3,6 +3,7 @@
 #include "annyos/block_device.hpp"
 #include "annyos/fat32.hpp"
 #include "annyos/ps2_keyboard.hpp"
+#include "annyos/virtio_net.hpp"
 
 #include <stdint.h>
 
@@ -32,6 +33,14 @@ struct Fat32DriveSetV1 {
     void* context;
     bool (*get_volume)(void* context, uint8_t drive_index,
                        const annyos::storage::Fat32Volume** volume);
+};
+
+struct EthernetFramesV1 {
+    bool (*ready)();
+    annyos::network::MacAddress (*mac_address)();
+    bool (*send)(const uint8_t* frame, uint16_t length);
+    uint32_t (*poll)(annyos::network::ReceiveFrame receive, void* context,
+                     uint32_t frame_budget);
 };
 
 } // namespace annyos::drivers::service

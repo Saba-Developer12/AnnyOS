@@ -106,8 +106,9 @@ API_SERVICES = {
     "DISK_LIST": 65,
     "DISK_SPACE": 66,
     "DISK_USE": 67,
+    "CURL": 68,
 }
-API_SERVICE_VERSIONS = {name: (1 if service <= 7 else 2 if service <= 13 else 3)
+API_SERVICE_VERSIONS = {name: (1 if service <= 7 else 2 if service <= 13 else 3 if service <= 67 else 4)
                         for name, service in API_SERVICES.items()}
 
 

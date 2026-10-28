@@ -9,6 +9,8 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info);
 
 namespace {
 constexpr EFI_UINTN kMemoryMapCapacity = 1024 * 1024;
+constexpr EFI_UINTN kDmaPageCount = 256;
+constexpr uint32_t kAllocateMaxAddress = 1;
 
 void console_write(EFI_SYSTEM_TABLE* system_table, const EFI_CHAR16* text) {
     if (system_table != nullptr && system_table->console_out != nullptr &&
@@ -25,6 +27,7 @@ void console_write(EFI_SYSTEM_TABLE* system_table, const EFI_CHAR16* text) {
 extern "C" EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE* system_table) {
     if (system_table == nullptr || system_table->boot_services == nullptr) return EFI_INVALID_PARAMETER;
     EFI_BOOT_SERVICES* services = system_table->boot_services;
+    EFI_STATUS status = EFI_SUCCESS;
     console_write(system_table, u"AnnyOS UEFI loader\r\n");
     annyos::boot::debug_write("AnnyOS: UEFI loader started\r\n");
 
@@ -38,8 +41,25 @@ extern "C" EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE*
         halt();
     }
 
+    // Legacy virtio PCI queues use 32-bit page-frame numbers. Reserve a
+    // bounded DMA arena below 4 GiB while boot services are still available.
+    uint64_t dma_address = 0xffffffffull;
+    status = services->allocate_pages(kAllocateMaxAddress, EFI_LOADER_DATA,
+                                      kDmaPageCount, &dma_address);
+    if (status == EFI_SUCCESS && dma_address != 0 &&
+        dma_address <= 0xffffffffull - kDmaPageCount * 4096ull) {
+        boot_info.dma_region = reinterpret_cast<void*>(static_cast<uintptr_t>(dma_address));
+        boot_info.dma_physical_address = dma_address;
+        boot_info.dma_region_size = kDmaPageCount * 4096ull;
+        auto* bytes = static_cast<uint8_t*>(boot_info.dma_region);
+        for (uint64_t index = 0; index < boot_info.dma_region_size; ++index) bytes[index] = 0;
+        annyos::boot::debug_write("AnnyOS: reserved low DMA arena\r\n");
+    } else {
+        annyos::boot::debug_write("AnnyOS: DMA arena allocation unavailable\r\n");
+    }
+
     void* memory_map = nullptr;
-    EFI_STATUS status = services->allocate_pool(EFI_LOADER_DATA, kMemoryMapCapacity, &memory_map);
+    status = services->allocate_pool(EFI_LOADER_DATA, kMemoryMapCapacity, &memory_map);
     if (status != EFI_SUCCESS || memory_map == nullptr) {
         console_write(system_table, u"AnnyOS: memory map allocation failed\r\n");
         annyos::boot::debug_write("AnnyOS: ERROR memory map allocation failed\r\n");

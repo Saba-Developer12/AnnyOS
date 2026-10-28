@@ -18,18 +18,19 @@ creation, and methods. Since AP v1 has no heap or call instruction, AADL object
 bindings are resolved by the compiler and method bodies are inlined. See
 [`AADL.md`](AADL.md) for the syntax and limits.
 
-AP programs may write text, draw aligned help rows, or call version 1, 2, and 3
+AP programs may write text, draw aligned help rows, or call version 1, 2, 3, and 4
 services. The API version in each AP header must be supported by the target
-AnnyOS kernel. API v3 declarations and six AADL system libraries are documented
-in [`AADL.md`](AADL.md).
+AnnyOS kernel. API v4 adds the `CURL` service and AADL wrapper. API declarations
+and the AADL system libraries are documented in [`AADL.md`](AADL.md).
 
 AADL exposes `print`, `title`, `row`, `api`, and `arg` statements. Applications
 can print up to eight command-line arguments using indexes `0` through `7`.
 The service set includes version/date/time/memory, reboot, a short sleep,
 PC-speaker control, ConfigSave theme operations, system and kernel calls,
 FAT32 file operations, bounded application memory, console drawing, keyboard,
-serial, USB-controller probing, and RTC access. ConfigSave calls require API v2;
-the newer service calls require API v3. The compiler records the required
+serial, USB-controller probing, RTC access, and host-bridged curl requests.
+ConfigSave calls require API v2; system services require API v3 and `CURL`
+requires API v4. The compiler records the required
 minimum version in each AP header. The `apps/lib/` modules expose the API
 groups as AADL classes, including disk listing and FAT32 space queries through
 `DiskManagementApi`. Imports resolve recursively relative to each source

@@ -73,6 +73,7 @@ struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
 
 using EFI_GET_MEMORY_MAP = EFI_STATUS (EFIAPI *)(EFI_UINTN*, void*, EFI_UINTN*, EFI_UINTN*, uint32_t*);
 using EFI_ALLOCATE_POOL = EFI_STATUS (EFIAPI *)(uint32_t, EFI_UINTN, void**);
+using EFI_ALLOCATE_PAGES = EFI_STATUS (EFIAPI *)(uint32_t, uint32_t, EFI_UINTN, uint64_t*);
 using EFI_EXIT_BOOT_SERVICES = EFI_STATUS (EFIAPI *)(EFI_HANDLE, EFI_UINTN);
 using EFI_LOCATE_PROTOCOL = EFI_STATUS (EFIAPI *)(EFI_GUID*, void*, void**);
 using EFI_RESET_SYSTEM = void (EFIAPI *)(uint32_t, EFI_STATUS, EFI_UINTN, void*);
@@ -98,7 +99,7 @@ struct EFI_BOOT_SERVICES {
     EFI_TABLE_HEADER header;
     void* raise_tpl;
     void* restore_tpl;
-    void* allocate_pages;
+    EFI_ALLOCATE_PAGES allocate_pages;
     void* free_pages;
     EFI_GET_MEMORY_MAP get_memory_map;
     EFI_ALLOCATE_POOL allocate_pool;

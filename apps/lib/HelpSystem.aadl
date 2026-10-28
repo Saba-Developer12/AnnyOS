@@ -18,6 +18,7 @@ class HelpSystem {
         row("TIME", "Show the current time");
         row("COLOR <THEME>", "Set BLUE, GREEN, AMBER, or MATRIX");
         row("CONFIGSAVE", "View or change saved settings");
+        row("CURL -H", "Show curl flags and usage examples");
         row("CFGDEMO", "Show ConfigSave API state");
         row("REBOOT", "Restart the computer");
         row("NAME[.AP]", "Run an app in this folder");

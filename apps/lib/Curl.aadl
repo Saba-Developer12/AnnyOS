@@ -1,0 +1,5 @@
+class Curl {
+    method request() {
+        api(CURL);
+    }
+}

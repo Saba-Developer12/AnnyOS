@@ -47,8 +47,12 @@ limited to 95 bytes.
 API v1 service IDs are `1 VERSION`, `2 DATE`, `3 TIME`, `4 MEMORY`, `5 REBOOT`,
 `6 SLEEP`, and `7 BEEP`. API v2 adds `8 CONFIG_LIST`, `9 CONFIG_GET_THEME`, and
 `10`-`13 CONFIG_SET_THEME_BLUE/GREEN/AMBER/MATRIX`. API v3 adds service IDs
-`14`-`64` for system/kernel, FAT32 file, bounded memory, audio, console graphics,
-keyboard, serial, USB-controller probe, and RTC operations. The complete names
+`14`-`67` for system/kernel, FAT32 file, bounded memory, audio, console graphics,
+keyboard, serial, USB-controller probe, RTC, and disk operations. API v4 adds
+service `68 CURL`, which accepts the bounded application arguments and forwards
+them through the configured host curl bridge. `CURL.AP` is an AADL-compiled
+wrapper; upstream curl itself runs on the host, not as guest-native code. The
+complete names
 and argument conventions are documented in `docs/AADL.md` and
 `include/annyos/api.hpp`. `SLEEP` waits for 500 ms; `BEEP` plays the standard
 short PC-speaker tone. ConfigSave settings are stored in `C:\ANNYOS.CFG`. The AP

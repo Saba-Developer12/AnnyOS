@@ -21,6 +21,7 @@ enum class ServiceId : uint32_t {
     keyboard_input = 3,
     ata_devices = 4,
     fat32_volumes = 5,
+    ethernet_frames = 6,
 };
 
 enum class DriverId : uint32_t {
@@ -29,6 +30,7 @@ enum class DriverId : uint32_t {
     ps2_keyboard = 3,
     ata_pio = 4,
     fat32 = 5,
+    virtio_net = 6,
 };
 
 struct ServiceRequirement {

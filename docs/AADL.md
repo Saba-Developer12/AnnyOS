@@ -75,6 +75,11 @@ are `SYS_VERSION`, `SYS_REBOOT`, `SYS_SHUTDOWN`, `SYS_UPTIME`, `SYS_CLEAR`,
 `BEEP` keep their API v1 service numbers. The other v3 calls require an AP
 header declaring API v3.
 
+API v4 adds the `CURL` service (ID 68). Import `lib/Curl.aadl` or run
+`apps/CURL.aadl`; the command line is passed through the AP argument table.
+The kernel forwards requests over the configured host bridge to upstream curl.
+This host-assisted command is not a native guest network client.
+
 Disk management services include `DISK_INFO` plus `DISK_LIST`, `DISK_SPACE`,
 and `DISK_USE`. Import `lib/DiskManagement.aadl` for the
 `DiskManagementApi` wrapper. `apps/DISKDEMO.aadl` is a sample which lists
@@ -96,7 +101,7 @@ unavailable because no mouse device is registered; USB scan detects xHCI but
 does not enumerate devices. PC speaker volume is mute/full only, and key/serial
 reads are non-blocking. `UI_CURSOR_POS` is unavailable in the text console.
 These handlers return status text instead of pretending those operations
-succeeded. All implemented calls are dispatched through the API v3 host table;
+succeeded. All implemented calls are dispatched through the API v4 host table;
 older API v1/v2 application binaries keep using the original callback layout.
 
 ## AP v1 execution model and bounds

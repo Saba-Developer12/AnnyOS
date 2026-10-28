@@ -1,5 +1,5 @@
 SHELL := /bin/sh
-.PHONY: all build run clean
+.PHONY: all build run curl curl-host clean
 
 all: build
 
@@ -8,6 +8,11 @@ build:
 
 run: build
 	bash ./scripts/run_qemu.sh
+
+curl-host:
+	bash ./scripts/build_curl_host.sh
+
+curl: curl-host
 
 clean:
 	rm -rf build

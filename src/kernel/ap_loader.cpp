@@ -45,10 +45,11 @@ ApResult process_program(const uint8_t* code, uint32_t code_size,
             if (offset >= code_size) return ApResult::invalid_program;
             const uint8_t service = code[offset++];
             if (service < static_cast<uint8_t>(annyos::api::Service::version) ||
-                service > static_cast<uint8_t>(annyos::api::Service::disk_use)) {
+                service > static_cast<uint8_t>(annyos::api::Service::curl)) {
                 return ApResult::invalid_program;
             }
             const uint32_t service_api_version = service >=
+                static_cast<uint8_t>(annyos::api::Service::curl) ? 4u : service >=
                 static_cast<uint8_t>(annyos::api::Service::sys_shutdown) ? 3u :
                 (service >= static_cast<uint8_t>(annyos::api::Service::config_list) ? 2u : 1u);
             if (declared_api_version < service_api_version) return ApResult::invalid_program;

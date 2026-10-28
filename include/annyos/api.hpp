@@ -4,7 +4,7 @@
 
 namespace annyos::api {
 
-constexpr uint32_t kVersion = 3;
+constexpr uint32_t kVersion = 4;
 constexpr uint32_t kMaximumServiceArguments = 8;
 constexpr uint32_t kMaximumServiceArgumentBytes = 95;
 
@@ -76,6 +76,7 @@ enum class Service : uint8_t {
     disk_list = 65,
     disk_space = 66,
     disk_use = 67,
+    curl = 68,
 
     // Public AADL/C++ spellings. SYS_VERSION, SYS_REBOOT, and BEEP retain the
     // original v1 service numbers so existing AP binaries remain compatible.
@@ -136,6 +137,7 @@ enum class Service : uint8_t {
     DISK_LIST = disk_list,
     DISK_SPACE = disk_space,
     DISK_USE = disk_use,
+    CURL = curl,
 };
 
 struct ServiceArguments {
@@ -163,7 +165,7 @@ struct AnnyOsApiV1 {
     ConsoleWriteHelpRow console_write_help_row;
     InvokeService invoke_service;
     // API v3 appends an argument-aware dispatch while preserving the v1/v2
-    // prefix above. Bytecode services receive the application's bounded argv.
+    // prefix above. Later service IDs (including API v4 CURL) share this table.
     InvokeServiceV3 invoke_service_v3;
 };
 

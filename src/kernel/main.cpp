@@ -3,6 +3,7 @@
 #include "annyos/ata_pio.hpp"
 #include "annyos/ap_format.hpp"
 #include "annyos/config_save.hpp"
+#include "annyos/curl_host_bridge.hpp"
 #include "annyos/driver_registry.hpp"
 #include "annyos/driver_services.hpp"
 #include "annyos/apfs.hpp"
@@ -13,6 +14,8 @@
 #include "annyos/serial.hpp"
 #include "annyos/timer_pit.hpp"
 #include "annyos/usb_hid.hpp"
+#include "annyos/virtio_net.hpp"
+#include "annyos/network_stack.hpp"
 #include "shell_state.hpp"
 
 namespace {
@@ -57,6 +60,7 @@ WorkingDirectory g_working_directory;
 DriveState g_drives[kAtaDriveSlots];
 annyos::config::ConfigSave g_config_save{};
 uint8_t g_ap_image[kApBufferCapacity];
+annyos::curl::HostResponse g_curl_response{};
 Color g_screen_color = kDefaultScreenColor;
 Color g_text_color = kDefaultTextColor;
 Color g_prompt_color = kDefaultPromptColor;
@@ -89,6 +93,9 @@ annyos::drivers::service::Fat32DriveSetV1 g_fat32_service{
     g_drives, driver_get_fat32_volume};
 annyos::drivers::service::AtaDriveSetV1 g_ata_service{
     g_drives, driver_get_ata_device};
+const annyos::drivers::service::EthernetFramesV1 g_ethernet_service{
+    annyos::network::virtio_net_ready, annyos::network::virtio_net_mac_address,
+    annyos::network::virtio_net_send, annyos::network::virtio_net_poll};
 
 void debug_write(const char* text) {
     while (*text != '\0') {
@@ -192,7 +199,16 @@ bool initialize_fat32_driver(void*, annyos::drivers::DriverRegistry& registry) {
     return registry.publish(annyos::drivers::ServiceId::fat32_volumes, 1, &g_fat32_service);
 }
 
-void initialize_kernel_drivers() {
+bool initialize_virtio_net_driver(void* context, annyos::drivers::DriverRegistry& registry) {
+    if (context == nullptr ||
+        !annyos::network::virtio_net_initialize(
+            *static_cast<const annyos::BootInfo*>(context))) return false;
+    debug_write("AnnyOS: legacy virtio-net link initialized\r\n");
+    return registry.publish(annyos::drivers::ServiceId::ethernet_frames, 1,
+                            &g_ethernet_service);
+}
+
+void initialize_kernel_drivers(const annyos::BootInfo* boot_info) {
     using namespace annyos::drivers;
     static const ServiceRequirement fat32_requirements[] = {
         {ServiceId::ata_devices, 1},
@@ -203,6 +219,7 @@ void initialize_kernel_drivers() {
         {DriverId::ps2_keyboard, "input.ps2kbd", 1, nullptr, 0, initialize_keyboard_driver},
         {DriverId::ata_pio, "storage.ata-pio", 1, nullptr, 0, initialize_ata_driver},
         {DriverId::fat32, "filesystem.fat32", 1, fat32_requirements, 1, initialize_fat32_driver},
+        {DriverId::virtio_net, "network.virtio-net", 1, nullptr, 0, initialize_virtio_net_driver},
     };
 
     g_driver_registry.reset();
@@ -211,7 +228,8 @@ void initialize_kernel_drivers() {
             debug_write("AnnyOS: driver registry rejected a built-in driver\r\n");
         }
     }
-    const InitializationSummary summary = g_driver_registry.initialize_all(nullptr);
+    const InitializationSummary summary = g_driver_registry.initialize_all(
+        const_cast<annyos::BootInfo*>(boot_info));
     char message[64] = "AnnyOS: driver startup complete: ";
     uint32_t length = 33;
     append_decimal(message, &length, summary.started);
@@ -278,6 +296,7 @@ void add_builtin_help(ConsoleState& console) {
     add_help_row(console, "DELETE <FILE>", "Delete a file and release its clusters");
     add_help_row(console, "CLS", "Clear the screen");
     add_help_row(console, "ECHO <TEXT>", "Print a message");
+    add_help_row(console, "CURL [OPTIONS]", "HTTP(S): -X -d -H -o/-O -L -v -s -u -k");
     add_help_row(console, "SLEEP", "Wait for 500 milliseconds");
     add_help_row(console, "BEEP", "Play a short PC speaker tone");
     add_help_row(console, "MEM", "Show memory information");
@@ -681,7 +700,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.6");
+            add_history_line(*state.console, "AnnyOS Version 0.4.7");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -834,6 +853,10 @@ bool api_memory_allocate(ConsoleState& console,
     return true;
 }
 
+void run_curl_command(ConsoleState& console, DriveState& drive,
+                      const WorkingDirectory& working_directory,
+                      const annyos::api::ServiceArguments* arguments);
+
 bool api_invoke_service_v3(void* context, annyos::api::Service service,
                           const annyos::api::ServiceArguments* arguments) {
     auto& state = *static_cast<KernelApiContext*>(context);
@@ -842,6 +865,12 @@ bool api_invoke_service_v3(void* context, annyos::api::Service service,
     const char* second = api_argument(arguments, 1);
     const char* third = api_argument(arguments, 2);
     switch (service) {
+        case annyos::api::Service::curl: {
+            WorkingDirectory& working_directory = *state.working_directory;
+            DriveState& drive = g_drives[working_directory.drive_index];
+            run_curl_command(console, drive, working_directory, arguments);
+            return true;
+        }
         case annyos::api::Service::sys_shutdown:
             add_history_line(console, "Shutting down AnnyOS...", g_prompt_color);
             annyos::shell::ui::redraw_history(*state.framebuffer, console, *state.working_directory, current_theme_colors());
@@ -1571,6 +1600,334 @@ void list_disks(ConsoleState& console, const DriveState* drives) {
         g_help_title_color);
 }
 
+void print_curl_text(ConsoleState& console, const uint8_t* bytes, uint32_t byte_count) {
+    char line[kLineCapacity];
+    uint32_t length = 0;
+    for (uint32_t index = 0; index < byte_count; ++index) {
+        const uint8_t byte = bytes[index];
+        if (byte == '\r') continue;
+        if (byte == '\n') {
+            line[length] = '\0';
+            add_history_line(console, line);
+            length = 0;
+            continue;
+        }
+        if (byte == '\t') {
+            if (length + 1 < sizeof(line)) line[length++] = ' ';
+        } else if (byte >= 32 && byte <= 126) {
+            if (length + 1 < sizeof(line)) line[length++] = static_cast<char>(byte);
+        } else if (byte >= 128) {
+            if (length + 1 < sizeof(line)) line[length++] = '?';
+        }
+        if (length + 1 >= sizeof(line)) {
+            line[length] = '\0';
+            add_history_line(console, line);
+            length = 0;
+        }
+    }
+    if (length != 0) {
+        line[length] = '\0';
+        add_history_line(console, line);
+    }
+}
+
+bool normalize_curl_filename(const char* source, char destination[13]) {
+    if (source == nullptr || destination == nullptr) return false;
+    uint32_t base_length = 0;
+    uint32_t extension_length = 0;
+    uint32_t output_length = 0;
+    bool after_dot = false;
+    while (source[output_length] != '\0') {
+        const char value = source[output_length];
+        if (value == '.') {
+            if (after_dot || base_length == 0) return false;
+            after_dot = true;
+            destination[output_length++] = '.';
+            continue;
+        }
+        const char normalized = uppercase(value);
+        if (!((normalized >= 'A' && normalized <= 'Z') ||
+              (normalized >= '0' && normalized <= '9') || normalized == '_' ||
+              normalized == '-' || normalized == '$' || normalized == '~')) return false;
+        if (!after_dot) {
+            if (++base_length > 8) return false;
+        } else if (++extension_length > 3) {
+            return false;
+        }
+        if (output_length >= 12) return false;
+        destination[output_length++] = normalized;
+    }
+    destination[output_length] = '\0';
+    return base_length != 0 && (!after_dot || extension_length != 0);
+}
+
+bool append_curl_wire_arguments(
+                                const char tokens[annyos::api::kMaximumServiceArguments]
+                                                   [annyos::api::kMaximumServiceArgumentBytes + 1],
+                                uint32_t token_count,
+                                char* output, uint32_t capacity) {
+    if (tokens == nullptr || output == nullptr || capacity == 0) return false;
+    uint32_t length = 0;
+    output[0] = '\0';
+    for (uint32_t token_index = 0; token_index < token_count; ++token_index) {
+        if (token_index != 0) {
+            if (length + 1 >= capacity) return false;
+            output[length++] = ' ';
+        }
+        if (length + 1 >= capacity) return false;
+        output[length++] = '"';
+        for (const char* cursor = tokens[token_index]; *cursor != '\0'; ++cursor) {
+            if (*cursor == '"' || *cursor == '\\') {
+                if (length + 1 >= capacity) return false;
+                output[length++] = '\\';
+            }
+            if (length + 1 >= capacity) return false;
+            output[length++] = *cursor;
+        }
+        if (length + 1 >= capacity) return false;
+        output[length++] = '"';
+        output[length] = '\0';
+    }
+    return length != 0;
+}
+
+bool curl_token_equals(const char* token, const char* expected) {
+    if (token == nullptr || expected == nullptr) return false;
+    while (*token != '\0' && *expected != '\0') {
+        if (*token++ != *expected++) return false;
+    }
+    return *token == '\0' && *expected == '\0';
+}
+
+void add_curl_help(ConsoleState& console) {
+    add_history_line(console, "ANNYOS | CURL GUIDE", g_help_title_color, true);
+    add_help_row(console, "SYNTAX", "CURL [OPTIONS] URL");
+    add_help_row(console, "-X METHOD", "HTTP method, for example GET or POST");
+    add_help_row(console, "-d DATA", "Request body; commonly used with POST");
+    add_help_row(console, "-H HEADER", "Add an HTTP header");
+    add_help_row(console, "-u USER:PASS", "HTTP basic authentication");
+    add_help_row(console, "-o FILE", "Save response in current FAT32 folder (8.3 name)");
+    add_help_row(console, "-o -", "Print response in the console");
+    add_help_row(console, "-O", "Save using the URL filename (must fit FAT 8.3)");
+    add_help_row(console, "-L", "Follow redirects");
+    add_help_row(console, "-v", "Show request diagnostics");
+    add_help_row(console, "-s", "Suppress curl diagnostics");
+    add_help_row(console, "-k", "Skip TLS certificate verification");
+    add_help_row(console, "-h, --help", "Show this guide");
+    add_history_line(console, "Examples:", g_prompt_color, true);
+    add_history_line(console, "CURL https://example.com/");
+    add_history_line(console, "CURL -L -o PAGE.HTM https://example.com/");
+    add_history_line(console, "CURL -X POST -d hello https://example.com/");
+}
+
+void run_curl_command(ConsoleState& console, DriveState& drive,
+                      const WorkingDirectory& working_directory,
+                      const annyos::api::ServiceArguments* arguments) {
+    char tokens[annyos::api::kMaximumServiceArguments]
+               [annyos::api::kMaximumServiceArgumentBytes + 1]{};
+    const uint32_t token_count = arguments == nullptr ? 0 : arguments->count;
+    if (token_count > annyos::api::kMaximumServiceArguments) {
+        add_history_line(console, "CURL accepts up to 8 arguments. Run CURL -h for help.");
+        return;
+    }
+    for (uint32_t token = 0; token < token_count; ++token) {
+        const uint32_t length = bounded_string_length(
+            arguments->values[token], annyos::api::kMaximumServiceArgumentBytes + 1);
+        if (length > annyos::api::kMaximumServiceArgumentBytes) {
+            add_history_line(console, "CURL argument exceeds the AP argument limit.");
+            return;
+        }
+        for (uint32_t index = 0; index <= length; ++index)
+            tokens[token][index] = arguments->values[token][index];
+    }
+    if (token_count == 0 || curl_token_equals(tokens[0], "-h") ||
+        curl_token_equals(tokens[0], "--help") || curl_token_equals(tokens[0], "help")) {
+        add_curl_help(console);
+        return;
+    }
+    const char* url = nullptr;
+    char output_name[13]{};
+    bool output_option_seen = false;
+    bool output_requested = false;
+    bool output_to_console = false;
+    bool remote_name = false;
+    bool verbose = false;
+    bool silent = false;
+    for (uint32_t index = 0; index < token_count; ++index) {
+        const char* token = tokens[index];
+        if (curl_token_equals(token, "-L") || curl_token_equals(token, "--location")) continue;
+        if (curl_token_equals(token, "-v") || curl_token_equals(token, "--verbose")) {
+            verbose = true;
+            continue;
+        }
+        if (curl_token_equals(token, "-s") || curl_token_equals(token, "--silent")) {
+            silent = true;
+            continue;
+        }
+        if (curl_token_equals(token, "-k") || curl_token_equals(token, "--insecure")) continue;
+        if (token[0] == '-' && token[1] == 'O' && token[2] == '\0') {
+            if (output_option_seen) {
+                add_history_line(console, "Use only one of -o <FILE> or -O.");
+                return;
+            }
+            output_option_seen = true;
+            output_requested = true;
+            remote_name = true;
+            continue;
+        }
+
+        const bool request_value = (token[0] == '-' && token[1] == 'X' && token[2] == '\0') ||
+            curl_token_equals(token, "--request");
+        const bool data_value = (token[0] == '-' && token[1] == 'd' && token[2] == '\0') ||
+            curl_token_equals(token, "--data");
+        const bool header_value = (token[0] == '-' && token[1] == 'H' && token[2] == '\0') ||
+            curl_token_equals(token, "--header");
+        const bool user_value = (token[0] == '-' && token[1] == 'u' && token[2] == '\0') ||
+            curl_token_equals(token, "--user");
+        const bool output_value = (token[0] == '-' && token[1] == 'o' && token[2] == '\0') ||
+            curl_token_equals(token, "--output");
+        if (request_value || data_value || header_value || user_value || output_value) {
+            if (index + 1 >= token_count) {
+                add_history_line(console, "CURL option is missing its value.");
+                return;
+            }
+            const char* value = tokens[++index];
+            if (output_value) {
+                if (output_option_seen) {
+                    add_history_line(console, "Use only one of -o <FILE> or -O.");
+                    return;
+                }
+                output_option_seen = true;
+                output_to_console = curl_token_equals(value, "-");
+                output_requested = !output_to_console;
+                if (output_requested && !normalize_curl_filename(value, output_name)) {
+                    add_history_line(console, "FAT32 output name must use 8.3 format, e.g. PAGE.HTM.");
+                    return;
+                }
+            }
+            continue;
+        }
+        if (token[0] == '-') {
+            add_history_line(console, "Unsupported CURL option. Use HELP for supported options.");
+            return;
+        }
+        if (url != nullptr) {
+            add_history_line(console, "CURL accepts one URL per command.");
+            return;
+        }
+        url = token;
+    }
+
+    if (url == nullptr) {
+        add_history_line(console, "Usage: CURL [OPTIONS] URL. Run CURL -h for option details.");
+        return;
+    }
+    if (remote_name) {
+        uint32_t end = bounded_string_length(url, kInputCapacity);
+        for (uint32_t index = 0; index < end; ++index) {
+            if (url[index] == '?' || url[index] == '#') {
+                end = index;
+                break;
+            }
+        }
+        uint32_t authority_end = 0;
+        while (authority_end + 2 < end &&
+               !(url[authority_end] == ':' && url[authority_end + 1] == '/' &&
+                 url[authority_end + 2] == '/')) {
+            ++authority_end;
+        }
+        if (authority_end + 2 >= end) {
+            add_history_line(console, "-O needs a URL with a FAT32 8.3 file name.");
+            return;
+        }
+        uint32_t path_start = authority_end + 3;
+        while (path_start < end && url[path_start] != '/') ++path_start;
+        if (path_start == end) {
+            add_history_line(console, "-O needs a URL with a FAT32 8.3 file name.");
+            return;
+        }
+        uint32_t start = path_start + 1;
+        for (uint32_t index = start; index < end; ++index) {
+            if (url[index] == '/') start = index + 1;
+        }
+        if (start >= end || end - start >= sizeof(output_name)) {
+            add_history_line(console, "-O needs a URL with a FAT32 8.3 file name.");
+            return;
+        }
+        char remote_filename[13]{};
+        for (uint32_t index = start; index < end; ++index) {
+            remote_filename[index - start] = url[index];
+        }
+        if (!normalize_curl_filename(remote_filename, output_name)) {
+            add_history_line(console, "URL file name must use FAT32 8.3 format for -O.");
+            return;
+        }
+    }
+
+    const uint32_t url_length = bounded_string_length(url, kInputCapacity);
+    const bool http = url_length >= 7 && lowercase(url[0]) == 'h' && lowercase(url[1]) == 't' &&
+        lowercase(url[2]) == 't' && lowercase(url[3]) == 'p' && url[4] == ':' &&
+        url[5] == '/' && url[6] == '/';
+    const bool https = url_length >= 8 && lowercase(url[0]) == 'h' && lowercase(url[1]) == 't' &&
+        lowercase(url[2]) == 't' && lowercase(url[3]) == 'p' &&
+        lowercase(url[4]) == 's' && url[5] == ':' && url[6] == '/' && url[7] == '/';
+    if (!http && !https) {
+        add_history_line(console, "Usage: CURL [OPTIONS] http://host/path or https://host/path");
+        return;
+    }
+
+    char wire_arguments[512]{};
+    if (!append_curl_wire_arguments(tokens, token_count, wire_arguments,
+                                   sizeof(wire_arguments))) {
+        add_history_line(console, "CURL command line is too long.");
+        return;
+    }
+    if (!annyos::curl::fetch_from_host(wire_arguments, &g_curl_response)) {
+        add_history_line(console, "Host curl bridge unavailable or request timed out.", g_help_title_color);
+        add_history_line(console, "Run in QEMU or configure the VirtualBox COM2 bridge.");
+        return;
+    }
+
+    if (verbose || (!silent && g_curl_response.curl_exit_code != 0)) {
+        print_curl_text(console, g_curl_response.diagnostic,
+                        g_curl_response.diagnostic_length);
+    }
+    if (output_requested && !output_to_console) {
+        if (!drive.mounted || working_directory.depth > kWorkingDirectoryDepth) {
+            add_history_line(console, "FAT32 drive is not mounted; cannot save the download.",
+                             g_help_title_color);
+        } else if (!annyos::storage::fat32_write_file(
+                       drive.volume,
+                       working_directory.cluster_stack[working_directory.depth],
+                       output_name, g_curl_response.body, g_curl_response.body_length)) {
+            add_history_line(console, "Could not save response to the current FAT32 directory.",
+                             g_help_title_color);
+        } else {
+            char saved_line[64] = "Saved ";
+            uint32_t saved_length = 6;
+            append_decimal(saved_line, &saved_length, g_curl_response.body_length);
+            append_text(saved_line, saved_length, sizeof(saved_line), " bytes to ");
+            saved_length = bounded_string_length(saved_line, sizeof(saved_line));
+            append_text(saved_line, saved_length, sizeof(saved_line), output_name);
+            add_history_line(console, saved_line, g_prompt_color);
+        }
+    } else if (g_curl_response.body_length != 0) {
+        print_curl_text(console, g_curl_response.body, g_curl_response.body_length);
+    } else {
+        add_history_line(console, "(empty response)");
+    }
+
+    if (!silent && g_curl_response.curl_exit_code != 0) {
+        char status[48] = "curl exited with code ";
+        uint32_t status_length = 22;
+        append_decimal(status, &status_length, g_curl_response.curl_exit_code);
+        add_history_line(console, status, g_help_title_color);
+    }
+    if (!silent && g_curl_response.truncated) {
+        add_history_line(console, "Response truncated at 8192 bytes.", g_help_title_color);
+    }
+}
+
 void submit_command(ConsoleState& console, DriveState* drives,
                     WorkingDirectory* working_directory,
                     const annyos::api::AnnyOsApiV1& api) {
@@ -1648,7 +2005,7 @@ void submit_command(ConsoleState& console, DriveState* drives,
 
 extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
     __asm__ volatile("cli" : : : "memory");
-    initialize_kernel_drivers();
+    initialize_kernel_drivers(boot_info);
     annyos::input::usb::ControllerInfo usb_controller{};
     const bool xhci_found = annyos::input::usb::probe_xhci(&usb_controller);
     if (xhci_found) {
@@ -1679,6 +2036,17 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
         for (;;) __asm__ volatile("hlt");
     }
 
+    const auto* ethernet_record =
+        g_driver_registry.query(annyos::drivers::ServiceId::ethernet_frames, 1);
+    bool network_started = false;
+    if (ethernet_record != nullptr) {
+        const auto* ethernet = static_cast<const annyos::drivers::service::EthernetFramesV1*>(
+            ethernet_record->interface_pointer);
+        network_started = annyos::network::network_stack_initialize(*ethernet);
+    }
+    debug_write(network_started ? "AnnyOS: DHCP discovery sent\r\n"
+                                : "AnnyOS: network stack unavailable\r\n");
+
     annyos::config::config_save_initialize(
         &g_config_save, g_drives[0].mounted ? &g_drives[0].volume : nullptr);
     apply_console_theme(annyos::config::config_save_active_theme(&g_config_save));
@@ -1693,7 +2061,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.6]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.7]");
         add_history_line(console, "Type HELP for commands.");
     }
     annyos::shell::ui::redraw_history(boot_info->framebuffer, console, working_directory, current_theme_colors());
@@ -1703,8 +2071,14 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
     const auto* keyboard = keyboard_record == nullptr ? nullptr :
         static_cast<const annyos::drivers::service::KeyboardInputV1*>(
             keyboard_record->interface_pointer);
+    bool dhcp_lease_logged = false;
 
     for (;;) {
+        (void)annyos::network::network_stack_poll(4);
+        if (!dhcp_lease_logged && annyos::network::network_interface_config().configured) {
+            debug_write("AnnyOS: DHCP IPv4 lease acquired\r\n");
+            dhcp_lease_logged = true;
+        }
         annyos::input::KeyEvent event{};
         if (keyboard == nullptr || !keyboard->poll(&event)) {
             __asm__ volatile("pause");
