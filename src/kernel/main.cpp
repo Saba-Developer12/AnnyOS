@@ -737,7 +737,7 @@ bool api_invoke_service(void* context, annyos::api::Service service) {
     auto& state = *static_cast<KernelApiContext*>(context);
     switch (service) {
         case annyos::api::Service::version:
-            add_history_line(*state.console, "AnnyOS Version 0.4.8");
+            add_history_line(*state.console, "AnnyOS Version 0.4.9");
             return true;
         case annyos::api::Service::date:
             add_rtc_report(*state.console, true);
@@ -2098,7 +2098,7 @@ extern "C" [[noreturn]] void kernel_main(const annyos::BootInfo* boot_info) {
                              "APPS", &applications_cluster);
     if (!has_apps_directory || !run_ap_file(console, g_drives[0].volume, applications_cluster,
                                               "STARTUP.AP", api, "")) {
-        add_history_line(console, "AnnyOS Command Processor [Version 0.4.8]");
+        add_history_line(console, "AnnyOS Command Processor [Version 0.4.9]");
         add_history_line(console, "Type HELP for commands.");
     }
     annyos::shell::ui::redraw_history(boot_info->framebuffer, console, working_directory, current_theme_colors());
